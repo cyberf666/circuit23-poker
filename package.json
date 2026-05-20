@@ -20,6 +20,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "next": "16.2.6",
+    "partykit": "^0.0.115",
     "prettier": "^3.4.0",
     "turbo": "^2.3.0",
     "typescript": "^5.7.0"

@@ -1,41 +1,40 @@
 'use client';
 // =====================================================
-// /play/online — Phase 2 Step 3
-//   Colyseus オンライン対戦テーブル
-//   PlayerSeat / CommunityCards / PotDisplay を再利用
+// /play/online — PartyKit 版オンライン対戦テーブル
 // =====================================================
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { Room } from 'colyseus.js';
-import { joinCircuit23, sendAction, sendReady } from '../../../lib/online/client';
+import PartySocket from 'partysocket';
+import { joinCircuit23, sendAction, sendReady, sendChat as sendChatMsg } from '../../../lib/online/client';
 import { CommunityCards } from '../../../components/CommunityCards';
 import { PlayerSeat } from '../../../components/PlayerSeat';
 import { PotDisplay, BettingInfo } from '../../../components/Chip';
+import { GAME_CONFIG } from '@ntp-poker/game-core';
 import type { ActionType } from '../../../lib/online/client';
 import type { Player, Card, PlayerLabel, Seat } from '@ntp-poker/types';
-import { GAME_CONFIG } from '@ntp-poker/game-core';
 
 // ── 内部データ型 ─────────────────────────────────────
 
-interface RoomPlayer {
+interface PlayerInfo {
   id: string;
   handle: string;
   seat: number;
   stack: number;
-  labels: string;
   isReady: boolean;
+  labels: string[];
 }
 
-interface PlayerGameInfo {
+interface PublicPlayerGame {
   seat: number;
   stack: number;
   currentBet: number;
+  totalBet: number;
   status: string;
   lastAction: string;
   isTurn: boolean;
 }
 
-interface TableGameInfo {
+interface PublicGame {
   street: string;
   phase: string;
   totalPot: number;
@@ -45,15 +44,25 @@ interface TableGameInfo {
   activeSeat: number;
   handNumber: number;
   communityCards: Card[];
-  playerGames: Map<string, PlayerGameInfo>;
+  playerGames: Record<string, PublicPlayerGame>;
+}
+
+interface PublicState {
+  type: 'state';
+  phase: 'lobby' | 'in_hand' | 'between_hand';
+  players: PlayerInfo[];
+  game: PublicGame | null;
+  message: string;
 }
 
 interface HoleCards {
+  type: 'hole_cards';
   cards: Card[];
   handNumber: number;
 }
 
 interface ShowdownResult {
+  type: 'showdown';
   revealedHands: {
     playerId: string;
     handle: string;
@@ -64,7 +73,15 @@ interface ShowdownResult {
   handNumber: number;
 }
 
-interface TurnTimer {
+interface HandEndMsg {
+  type: 'hand_end';
+  result: string;
+  winners: { playerId: string; handle: string; amount: number }[];
+  handNumber: number;
+}
+
+interface TurnTimerMsg {
+  type: 'turn_timer';
   playerId: string;
   deadline: number;
   timeoutMs: number;
@@ -73,32 +90,30 @@ interface TurnTimer {
 // ── Colyseus → Player 変換 ────────────────────────────
 
 function buildPlayer(
-  rp: RoomPlayer,
-  pg: PlayerGameInfo | undefined,
+  pi: PlayerInfo,
+  pg: PublicPlayerGame | undefined,
   myHoleCards: Card[],
-  sessionId: string,
-  showdownHands: ShowdownResult | null,
+  myId: string,
+  showdown: ShowdownResult | null,
 ): Player {
-  // ショーダウン時は全員のホールカードが公開される
   let holeCards: Card[] = [];
-  if (rp.id === sessionId) {
+  if (pi.id === myId) {
     holeCards = myHoleCards;
-  } else if (showdownHands) {
-    const revealed = showdownHands.revealedHands.find(h => h.playerId === rp.id);
-    holeCards = revealed?.holeCards ?? [];
+  } else if (showdown) {
+    holeCards = showdown.revealedHands.find(h => h.playerId === pi.id)?.holeCards ?? [];
   }
 
   return {
-    id: rp.id,
-    handle: rp.handle,
-    seat: rp.seat as Seat,
-    stack: pg?.stack ?? rp.stack,
+    id: pi.id,
+    handle: pi.handle,
+    seat: pi.seat as Seat,
+    stack: pg?.stack ?? pi.stack,
     currentBet: pg?.currentBet ?? 0,
-    totalBet: pg?.currentBet ?? 0, // schema には totalBet がないので currentBet で代替
+    totalBet: pg?.totalBet ?? 0,
     holeCards,
     status: (pg?.status ?? 'active') as Player['status'],
     isTurn: pg?.isTurn ?? false,
-    labels: rp.labels.split(',').filter(Boolean) as PlayerLabel[],
+    labels: pi.labels as PlayerLabel[],
     isCpu: false,
     lastAction: (pg?.lastAction || undefined) as ActionType | undefined,
   };
@@ -106,37 +121,21 @@ function buildPlayer(
 
 // ── ターンカウントダウンバー ──────────────────────────
 
-function TurnTimerBar({
-  timer,
-  playerId,
-}: {
-  timer: TurnTimer | null;
-  playerId: string;
-}) {
+function TurnTimerBar({ timer, playerId }: { timer: TurnTimerMsg | null; playerId: string }) {
   const [pct, setPct] = useState(100);
   useEffect(() => {
-    if (!timer || timer.playerId !== playerId) {
-      setPct(100);
-      return;
-    }
-    const tick = () => {
-      const remaining = timer.deadline - Date.now();
-      setPct(Math.max(0, (remaining / timer.timeoutMs) * 100));
-    };
+    if (!timer || timer.playerId !== playerId) { setPct(100); return; }
+    const tick = () => setPct(Math.max(0, ((timer.deadline - Date.now()) / timer.timeoutMs) * 100));
     tick();
     const id = setInterval(tick, 100);
     return () => clearInterval(id);
   }, [timer, playerId]);
 
   if (!timer || timer.playerId !== playerId) return null;
-  const color =
-    pct > 50 ? '#4ade80' : pct > 25 ? '#fbbf24' : '#ef4444';
+  const color = pct > 50 ? '#4ade80' : pct > 25 ? '#fbbf24' : '#ef4444';
   return (
     <div className="w-full h-1 bg-border-default rounded-full overflow-hidden mt-1">
-      <div
-        style={{ width: `${pct}%`, backgroundColor: color, transition: 'width 0.1s linear' }}
-        className="h-full"
-      />
+      <div style={{ width: `${pct}%`, backgroundColor: color, transition: 'width 0.1s linear' }} className="h-full" />
     </div>
   );
 }
@@ -144,65 +143,52 @@ function TurnTimerBar({
 // ── オンライン用アクションバー ─────────────────────────
 
 function OnlineActionBar({
-  tableGame,
+  game,
   myGame,
   onAction,
 }: {
-  tableGame: TableGameInfo;
-  myGame: PlayerGameInfo;
+  game: PublicGame;
+  myGame: PublicPlayerGame;
   onAction: (type: ActionType, amount?: number) => void;
 }) {
-  const toCall = Math.max(0, tableGame.currentBetToCall - myGame.currentBet);
+  const toCall = Math.max(0, game.currentBetToCall - myGame.currentBet);
   const callAmt = Math.min(toCall, myGame.stack);
   const canCheck = toCall === 0 && myGame.stack > 0;
-  const canCall = toCall > 0 && myGame.stack >= toCall;
-  const canCallPartial = toCall > 0 && myGame.stack < toCall; // all-in call
-  const canBet = tableGame.currentBetToCall === 0 && myGame.stack > 0;
-  const canRaise = tableGame.currentBetToCall > 0 && myGame.stack > toCall;
-  const minBet = Math.min(tableGame.minRaise, myGame.stack);
+  const canCall = toCall > 0 && myGame.stack > toCall;
+  const canCallPartial = toCall > 0 && myGame.stack <= toCall;
+  const canBet = game.currentBetToCall === 0 && myGame.stack > 0;
+  const canRaise = game.currentBetToCall > 0 && myGame.stack > toCall;
+  const minBet = Math.min(game.minRaise, myGame.stack);
   const maxBet = myGame.stack;
-
   const [betAmount, setBetAmount] = useState(minBet);
-  useEffect(() => { setBetAmount(minBet); }, [minBet]);
+  useEffect(() => setBetAmount(minBet), [minBet]);
 
-  // RAISE TO xxx (+増加額)
   const raiseIncrement = betAmount - myGame.currentBet;
+  const adjustBet = (delta: number) =>
+    setBetAmount(prev => Math.min(Math.max(prev + delta, minBet), maxBet));
 
-  const handleBet = () => {
-    const amt = Math.min(Math.max(betAmount, minBet), maxBet);
-    onAction(canBet ? 'BET' : 'RAISE', amt);
-  };
-
-  /**
-   * 増減ボタン: delta 分だけ betAmount を加減算し、min/max にクランプ
-   */
-  const adjustBet = (delta: number) => {
-    setBetAmount((prev) => Math.min(Math.max(prev + delta, minBet), maxBet));
-  };
-
-  const btn = (
-    label: string,
-    onClick: () => void,
-    variant: 'primary' | 'secondary' | 'ghost',
-    disabled?: boolean,
-  ) => {
-    const base = 'h-12 px-4 rounded-sm text-sm font-bold tracking-[0.15em] uppercase transition-all active:scale-95';
+  const Btn = ({
+    label, onClick, variant, disabled, subLabel,
+  }: {
+    label: string; onClick: () => void;
+    variant: 'primary' | 'secondary' | 'ghost'; disabled?: boolean; subLabel?: string;
+  }) => {
+    const base = 'h-12 px-4 rounded-sm text-sm font-bold tracking-[0.15em] uppercase transition-all active:scale-95 flex flex-col items-center justify-center';
     const v = {
       primary: 'bg-neon-pink text-background neon-glow-pink hover:scale-[1.02] disabled:opacity-40 disabled:scale-100',
       secondary: 'bg-surface border border-border-default text-foreground hover:border-neon-blue hover:text-neon-blue',
       ghost: 'border border-border-default text-text-secondary hover:border-crimson hover:text-crimson',
     };
     return (
-      <button key={label} onClick={onClick} disabled={disabled}
-        className={`${base} ${v[variant]}`}>
-        {label}
+      <button onClick={onClick} disabled={disabled} className={`${base} ${v[variant]}`}>
+        <span>{label}</span>
+        {subLabel && <span className="text-[10px] font-normal opacity-80 tracking-normal normal-case">{subLabel}</span>}
       </button>
     );
   };
 
   return (
     <div className="flex flex-col gap-3 max-w-3xl mx-auto w-full">
-      {/* ステータス */}
       <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs font-mono">
         <span className="text-text-secondary tracking-[0.2em]">THIS STREET</span>
         <span className="text-cyber-gold font-bold tabular-nums">{myGame.currentBet.toLocaleString()}</span>
@@ -214,266 +200,210 @@ function OnlineActionBar({
         <span className="text-foreground font-bold tabular-nums">{myGame.stack.toLocaleString()}</span>
       </div>
 
-      {/* クイックサイズ — 増減ボタン */}
       {(canBet || canRaise) && (
         <div className="flex gap-1.5 items-center justify-center text-xs flex-wrap">
           <span className="text-text-secondary font-mono tracking-wider">±</span>
-          {GAME_CONFIG.QUICK_BET_INCREMENTS.map((delta) => {
-            const isPositive = delta > 0;
-            return (
-              <button key={delta}
-                onClick={() => adjustBet(delta)}
-                className={`px-2.5 py-1 border rounded-sm font-mono transition-colors ${
-                  isPositive
-                    ? 'border-border-default text-neon-blue hover:border-neon-blue hover:bg-neon-blue/10'
-                    : 'border-border-default text-text-secondary hover:border-crimson hover:text-crimson'
-                }`}>
-                {isPositive ? `+${delta}` : `${delta}`}
-              </button>
-            );
-          })}
-          <button
-            onClick={() => setBetAmount(maxBet)}
+          {GAME_CONFIG.QUICK_BET_INCREMENTS.map(delta => (
+            <button key={delta} onClick={() => adjustBet(delta)}
+              className={`px-2.5 py-1 border rounded-sm font-mono transition-colors ${
+                delta > 0
+                  ? 'border-border-default text-neon-blue hover:border-neon-blue hover:bg-neon-blue/10'
+                  : 'border-border-default text-text-secondary hover:border-crimson hover:text-crimson'
+              }`}>
+              {delta > 0 ? `+${delta}` : `${delta}`}
+            </button>
+          ))}
+          <button onClick={() => setBetAmount(maxBet)}
             className="px-2.5 py-1 border border-border-default rounded-sm text-cyber-gold hover:border-cyber-gold font-mono transition-colors">
             ALL-IN
           </button>
         </div>
       )}
 
-      {/* スライダー — min=minBet(minRaise), max=スタック全額 */}
       {(canBet || canRaise) && (
         <div className="flex items-center gap-3">
           <input type="range" min={minBet} max={maxBet} value={betAmount} step={10}
-            onChange={e => setBetAmount(Number(e.target.value))}
-            className="flex-1 accent-neon-pink" />
+            onChange={e => setBetAmount(Number(e.target.value))} className="flex-1 accent-neon-pink" />
           <input type="number" value={betAmount} min={minBet} max={maxBet}
-            onChange={e => {
-              const v = Number(e.target.value);
-              setBetAmount(Math.min(Math.max(v, minBet), maxBet));
-            }}
+            onChange={e => setBetAmount(Math.min(Math.max(Number(e.target.value), minBet), maxBet))}
             className="w-24 px-2 py-1 bg-surface border border-border-default rounded-sm text-foreground font-mono text-right" />
         </div>
       )}
 
-      {/* アクションボタン */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {btn('FOLD', () => onAction('FOLD'), 'ghost')}
-        {canCheck && btn('CHECK', () => onAction('CHECK'), 'secondary')}
-        {canCall && btn(`CALL ${callAmt.toLocaleString()}`, () => onAction('CALL'), 'secondary')}
-        {canCallPartial && btn(`ALL-IN ${myGame.stack.toLocaleString()}`, () => onAction('CALL'), 'secondary')}
-        {(canBet || canRaise) && btn(
-          canBet
-            ? `BET ${betAmount.toLocaleString()}`
-            : `RAISE TO ${betAmount.toLocaleString()}${raiseIncrement > 0 ? ` (+${raiseIncrement.toLocaleString()})` : ''}`,
-          handleBet,
-          'primary',
-          betAmount < minBet || betAmount > maxBet,
+        <Btn label="FOLD" onClick={() => onAction('FOLD')} variant="ghost" />
+        {canCheck && <Btn label="CHECK" onClick={() => onAction('CHECK')} variant="secondary" />}
+        {canCall && <Btn label={`CALL ${callAmt.toLocaleString()}`} onClick={() => onAction('CALL')} variant="secondary" />}
+        {canCallPartial && <Btn label={`ALL-IN ${myGame.stack.toLocaleString()}`} onClick={() => onAction('CALL')} variant="secondary" />}
+        {(canBet || canRaise) && (
+          <Btn
+            label={canBet ? `BET ${betAmount.toLocaleString()}` : `RAISE TO ${betAmount.toLocaleString()}`}
+            subLabel={canRaise && raiseIncrement > 0 ? `+${raiseIncrement.toLocaleString()}` : undefined}
+            onClick={() => onAction(canBet ? 'BET' : 'RAISE', Math.min(Math.max(betAmount, minBet), maxBet))}
+            variant="primary"
+            disabled={betAmount < minBet || betAmount > maxBet}
+          />
         )}
       </div>
     </div>
   );
 }
 
-// ── メインページ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 type PagePhase = 'idle' | 'connecting' | 'lobby' | 'in_hand' | 'between_hand' | 'error';
 
 export default function OnlinePage() {
   const [pagePhase, setPagePhase] = useState<PagePhase>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState('');
-  const [handle, setHandle] = useState('guest');
-  const [players, setPlayers] = useState<RoomPlayer[]>([]);
-  const [tableGame, setTableGame] = useState<TableGameInfo | null>(null);
+  const [myId, setMyId] = useState('');
+  const [handle, setHandle] = useState('');
+  const [players, setPlayers] = useState<PlayerInfo[]>([]);
+  const [game, setGame] = useState<PublicGame | null>(null);
   const [holeCards, setHoleCards] = useState<HoleCards | null>(null);
   const [showdown, setShowdown] = useState<ShowdownResult | null>(null);
-  const [handEnd, setHandEnd] = useState<{ winners: { handle: string; amount: number }[]; type: string } | null>(null);
+  const [handEnd, setHandEnd] = useState<HandEndMsg | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
-  const [turnTimer, setTurnTimer] = useState<TurnTimer | null>(null);
+  const [turnTimer, setTurnTimer] = useState<TurnTimerMsg | null>(null);
   const [chat, setChat] = useState<{ from: string; text: string; self?: boolean }[]>([]);
   const [chatInput, setChatInput] = useState('');
-  const [reconnecting, setReconnecting] = useState(false);
-  const roomRef = useRef<Room | null>(null);
+  const socketRef = useRef<PartySocket | null>(null);
 
   // ── 接続 ──────────────────────────────────────────
 
-  const connect = async () => {
+  const connect = () => {
+    if (!handle.trim()) return;
     setPagePhase('connecting');
     setError(null);
-    try {
-      const room = await joinCircuit23({ handle, labels: ['GUEST'] });
-      roomRef.current = room;
-      setSessionId(room.sessionId);
 
-      // ─ State 同期 ─
-      const refreshState = () => {
-        const s = room.state as {
-          players?: Map<string, RoomPlayer>;
-          phase?: string;
-          tableGame?: {
-            street: string; phase: string; totalPot: number;
-            currentBetToCall: number; minRaise: number;
-            dealerSeat: number; activeSeat: number; handNumber: number;
-            communityCards: Iterable<Card>;
-            playerGames: Map<string, PlayerGameInfo>;
-          };
-        };
+    const socket = joinCircuit23({ handle: handle.trim(), labels: ['GUEST'] });
+    socketRef.current = socket;
 
-        // Players
-        const list: RoomPlayer[] = [];
-        s.players?.forEach?.(p => {
-          list.push({
-            id: p.id, handle: p.handle, seat: p.seat,
-            stack: p.stack, labels: p.labels,
-            isReady: (p as { isReady?: boolean }).isReady ?? false,
-          });
-        });
-        setPlayers(list.sort((a, b) => a.seat - b.seat));
+    // 接続成功時に自分の ID を保存
+    socket.addEventListener('open', () => {
+      setMyId(socket.id);
+    });
 
-        // Phase
-        const serverPhase = s.phase ?? 'lobby';
-        setPagePhase(
-          serverPhase === 'in_hand' ? 'in_hand'
-          : serverPhase === 'between_hand' ? 'between_hand'
-          : 'lobby',
-        );
+    socket.addEventListener('message', (evt: MessageEvent) => {
+      let msg: PublicState | HoleCards | ShowdownResult | HandEndMsg | TurnTimerMsg |
+        { type: 'turn_timer_clear'; playerId: string } |
+        { type: 'chat'; from: string; text: string } |
+        { type: 'error'; code: string; message?: string };
+      try { msg = JSON.parse(evt.data as string); }
+      catch { return; }
 
-        // TableGame
-        const tg = s.tableGame;
-        if (tg && tg.street !== 'waiting') {
-          const communityCards = Array.from(tg.communityCards ?? []);
-          const playerGames = new Map<string, PlayerGameInfo>();
-          tg.playerGames?.forEach?.((pg, id) => {
-            playerGames.set(id, {
-              seat: pg.seat, stack: pg.stack, currentBet: pg.currentBet,
-              status: pg.status, lastAction: pg.lastAction, isTurn: pg.isTurn,
-            });
-          });
-          setTableGame({
-            street: tg.street, phase: tg.phase, totalPot: tg.totalPot,
-            currentBetToCall: tg.currentBetToCall, minRaise: tg.minRaise,
-            dealerSeat: tg.dealerSeat, activeSeat: tg.activeSeat,
-            handNumber: tg.handNumber, communityCards, playerGames,
-          });
-        } else if (serverPhase !== 'in_hand' && serverPhase !== 'between_hand') {
-          setTableGame(null);
+      switch (msg.type) {
+        case 'state': {
+          const s = msg as PublicState;
+          setPlayers(s.players);
+          setGame(s.game);
+          const phase: PagePhase =
+            s.phase === 'in_hand' ? 'in_hand'
+            : s.phase === 'between_hand' ? 'between_hand'
+            : 'lobby';
+          setPagePhase(phase);
+          break;
         }
-      };
+        case 'hole_cards':
+          setHoleCards(msg as HoleCards);
+          setHandEnd(null);
+          setShowdown(null);
+          break;
+        case 'showdown':
+          setShowdown(msg as ShowdownResult);
+          setHandEnd(null);
+          break;
+        case 'hand_end':
+          setHandEnd(msg as HandEndMsg);
+          setShowdown(null);
+          break;
+        case 'turn_timer':
+          setTurnTimer(msg as TurnTimerMsg);
+          break;
+        case 'turn_timer_clear':
+          setTurnTimer(null);
+          break;
+        case 'chat': {
+          const c = msg as { type: 'chat'; from: string; text: string };
+          setChat(prev => [...prev.slice(-49), { from: c.from, text: c.text, self: c.from === handle.trim() }]);
+          break;
+        }
+        case 'error': {
+          const e = msg as { type: 'error'; code: string; message?: string };
+          const txt = `${e.code}${e.message ? ': ' + e.message : ''}`;
+          setServerError(txt);
+          setTimeout(() => setServerError(null), 4000);
+          break;
+        }
+      }
+    });
 
-      refreshState();
-      room.onStateChange(refreshState);
+    socket.addEventListener('close', () => {
+      socketRef.current = null;
+      setPagePhase('idle');
+      setGame(null);
+      setHoleCards(null);
+      setIsReady(false);
+      setTurnTimer(null);
+      setShowdown(null);
+      setHandEnd(null);
+    });
 
-      // ─ メッセージ ─
-      room.onMessage('hole-cards', (msg: HoleCards) => {
-        setHoleCards(msg);
-        setHandEnd(null);
-        setShowdown(null);
-      });
-
-      room.onMessage('hand_end', (msg: { type: string; winners: { handle: string; amount: number }[] }) => {
-        setHandEnd(msg);
-        setShowdown(null);
-      });
-
-      room.onMessage('showdown', (msg: ShowdownResult) => {
-        setShowdown(msg);
-        setHandEnd(null);
-      });
-
-      room.onMessage('turn_timer', (msg: TurnTimer) => {
-        setTurnTimer(msg);
-      });
-
-      room.onMessage('turn_timer_clear', () => {
-        setTurnTimer(null);
-      });
-
-      room.onMessage('chat', (msg: { from: string; text: string; sessionId?: string }) => {
-        setChat(prev => [...prev.slice(-49), {
-          from: msg.from,
-          text: msg.text,
-          self: msg.sessionId === room.sessionId,
-        }]);
-      });
-
-      room.onMessage('error', (msg: { code: string; message?: string }) => {
-        const txt = `${msg.code}${msg.message ? ': ' + msg.message : ''}`;
-        setServerError(txt);
-        setTimeout(() => setServerError(null), 4000);
-      });
-
-      room.onLeave(() => {
-        roomRef.current = null;
-        setPagePhase('idle');
-        setTableGame(null);
-        setHoleCards(null);
-        setIsReady(false);
-        setTurnTimer(null);
-        setShowdown(null);
-        setHandEnd(null);
-        setReconnecting(false);
-      });
-
-      setPagePhase('lobby');
-    } catch (e) {
-      setError((e as Error).message);
+    socket.addEventListener('error', () => {
+      setError('接続できませんでした。サーバーが起動しているか確認してください。');
       setPagePhase('error');
-    }
+    });
   };
 
   const disconnect = () => {
-    roomRef.current?.leave();
+    socketRef.current?.close();
+    socketRef.current = null;
+    setPagePhase('idle');
   };
 
   const toggleReady = () => {
-    if (!roomRef.current) return;
+    const socket = socketRef.current;
+    if (!socket) return;
     const next = !isReady;
     setIsReady(next);
-    sendReady(roomRef.current, next);
+    sendReady(socket, next);
   };
 
   const doAction = useCallback((type: ActionType, amount?: number) => {
-    const room = roomRef.current;
-    if (!room) return;
-    sendAction(room, type, amount);
+    const socket = socketRef.current;
+    if (!socket) return;
+    sendAction(socket, type, amount);
   }, []);
 
-  const sendChat = () => {
-    if (!chatInput.trim() || !roomRef.current) return;
-    roomRef.current.send('chat', { text: chatInput });
+  const doSendChat = () => {
+    const socket = socketRef.current;
+    if (!chatInput.trim() || !socket) return;
+    sendChatMsg(socket, chatInput);
     setChatInput('');
   };
 
-  useEffect(() => () => { roomRef.current?.leave(); }, []);
+  useEffect(() => () => { socketRef.current?.close(); }, []);
 
   // ── 自分の状態 ────────────────────────────────────
 
-  const myGame = tableGame?.playerGames.get(sessionId) ?? null;
-  const myPlayer = players.find(p => p.id === sessionId);
+  const me = players.find(p => p.id === myId);
+  const myGame = game?.playerGames[myId] ?? null;
   const isMyTurn = myGame?.isTurn ?? false;
-  const isHandEnd = tableGame?.phase === 'hand_end' || pagePhase === 'between_hand';
+  const isHandEnd = game?.phase === 'hand_end' || pagePhase === 'between_hand';
+  const others = players.filter(p => p.id !== myId);
 
-  // プレイヤーリストを「自分が下、他人が上」に並べる
-  const others = players.filter(p => p.id !== sessionId);
-  const me = players.find(p => p.id === sessionId);
-
-  // ショーダウン時のバッジマップ
   const showdownBestHand = new Map<string, string>();
-  const winnerIds = new Set<string>();
-  showdown?.revealedHands.forEach(h => {
-    showdownBestHand.set(h.playerId, h.evalResult?.name ?? '');
-  });
-  showdown?.winnerIds.forEach(id => winnerIds.add(id));
-  handEnd?.winners.forEach(w => {
-    // fold_win の場合 playerId がないので名前で特定
-    const p = players.find(pl => pl.handle === w.handle);
-    if (p) winnerIds.add(p.id);
-  });
+  const winnerSet = new Set<string>();
+  showdown?.revealedHands.forEach(h => showdownBestHand.set(h.playerId, h.evalResult?.name ?? ''));
+  showdown?.winnerIds.forEach(id => winnerSet.add(id));
+  handEnd?.winners.forEach(w => winnerSet.add(w.playerId));
 
-  // ─────────────────────────────────────────────────
+  const buildP = (pi: PlayerInfo) =>
+    buildPlayer(pi, game?.playerGames[pi.id], holeCards?.cards ?? [], myId, showdown ?? null);
 
-  // ── アイドル・エラー: ジョイン画面 ──
+  // ── アイドル・エラー画面 ──
+
   if (pagePhase === 'idle' || pagePhase === 'error' || pagePhase === 'connecting') {
     return (
       <div className="flex flex-1 items-center justify-center px-4">
@@ -491,8 +421,9 @@ export default function OnlinePage() {
               value={handle}
               onChange={e => setHandle(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && connect()}
-              placeholder="your name in Sector 23"
+              placeholder="your callsign in Sector 23"
               disabled={pagePhase === 'connecting'}
+              maxLength={12}
               className="w-full px-3 py-2 bg-surface border border-border-default rounded-sm text-foreground font-mono"
             />
             <button
@@ -502,7 +433,7 @@ export default function OnlinePage() {
             >
               {pagePhase === 'connecting' ? 'CONNECTING…' : 'ENTER SECTOR 23'}
             </button>
-            {error && <p className="text-xs text-crimson font-mono">Error: {error}</p>}
+            {error && <p className="text-xs text-crimson font-mono">{error}</p>}
           </div>
 
           <p className="text-center text-[10px] text-text-secondary font-mono opacity-50">
@@ -513,7 +444,8 @@ export default function OnlinePage() {
     );
   }
 
-  // ── ロビー: 待合室 ──
+  // ── ロビー ──
+
   if (pagePhase === 'lobby') {
     return (
       <div className="flex flex-col flex-1 px-4 sm:px-8 py-6 max-w-2xl mx-auto w-full gap-5">
@@ -537,9 +469,9 @@ export default function OnlinePage() {
             {players.map(p => (
               <li key={p.id} className="flex items-center gap-3 text-sm font-mono">
                 <span className="text-text-secondary w-10">#{p.seat}</span>
-                <span className={`font-bold ${p.id === sessionId ? 'text-neon-pink' : 'text-foreground'}`}>
+                <span className={`font-bold ${p.id === myId ? 'text-neon-pink' : 'text-foreground'}`}>
                   {p.handle}
-                  {p.id === sessionId && <span className="text-[10px] text-text-secondary ml-1">(YOU)</span>}
+                  {p.id === myId && <span className="text-[10px] text-text-secondary ml-1">(YOU)</span>}
                 </span>
                 <span className="ml-auto text-cyber-gold">◉{p.stack}</span>
                 {p.isReady && <span className="text-[10px] tracking-widest text-acid-green">RDY</span>}
@@ -550,24 +482,19 @@ export default function OnlinePage() {
             )}
           </ul>
 
-          <div className="flex gap-3 pt-2">
-            <button onClick={toggleReady}
-              className={`flex-1 h-11 rounded-sm text-sm font-bold tracking-[0.2em] uppercase transition-colors ${
-                isReady
-                  ? 'bg-acid-green text-background'
-                  : 'border border-acid-green text-acid-green hover:bg-acid-green/10'
-              }`}>
-              {isReady ? '✓ READY' : 'READY UP'}
-            </button>
-          </div>
+          <button onClick={toggleReady}
+            className={`w-full h-11 rounded-sm text-sm font-bold tracking-[0.2em] uppercase transition-colors ${
+              isReady ? 'bg-acid-green text-background' : 'border border-acid-green text-acid-green hover:bg-acid-green/10'
+            }`}>
+            {isReady ? '✓ READY' : 'READY UP'}
+          </button>
 
           <p className="text-xs text-text-secondary font-mono text-center">
             {players.filter(p => p.isReady).length} / {players.length} ready
-            {players.filter(p => p.isReady).length < 2 && ' — need 2+ to start'}
+            {players.filter(p => p.isReady).length < 2 && ' — 2人以上READYでスタート'}
           </p>
         </section>
 
-        {/* チャット */}
         <section className="rounded-sm border border-border-default bg-surface/40 p-4 space-y-3">
           <div className="h-24 overflow-y-auto space-y-1 text-xs font-mono">
             {chat.length === 0
@@ -581,10 +508,9 @@ export default function OnlinePage() {
           </div>
           <div className="flex gap-2">
             <input value={chatInput} onChange={e => setChatInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && sendChat()}
-              placeholder="message…"
+              onKeyDown={e => e.key === 'Enter' && doSendChat()} placeholder="message…"
               className="flex-1 px-3 py-1.5 bg-surface border border-border-default rounded-sm text-foreground font-mono text-xs" />
-            <button onClick={sendChat}
+            <button onClick={doSendChat}
               className="px-4 h-8 border border-border-default text-text-secondary rounded-sm text-xs hover:border-neon-pink hover:text-neon-pink">
               Send
             </button>
@@ -594,17 +520,13 @@ export default function OnlinePage() {
     );
   }
 
-  // ── ゲームテーブル (in_hand / between_hand) ──
-
-  const buildP = (rp: RoomPlayer) =>
-    buildPlayer(rp, tableGame?.playerGames.get(rp.id), holeCards?.cards ?? [], sessionId, showdown ?? null);
+  // ── ゲームテーブル ──
 
   const othersPlayers = others.map(buildP);
   const mePlayer = me ? buildP(me) : null;
 
   return (
     <div className="flex flex-col flex-1 min-h-screen relative overflow-hidden">
-      {/* ── ヘッダー ── */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-border-default bg-surface-elevated/60 backdrop-blur-sm relative z-10">
         <div className="flex items-center gap-3">
           <Link href="/" className="font-display font-bold tracking-wider text-sm hover:text-neon-pink transition-colors">
@@ -615,10 +537,10 @@ export default function OnlinePage() {
           </span>
         </div>
         <div className="flex items-center gap-4 text-xs font-mono">
-          {tableGame && (
+          {game && (
             <>
-              <span className="text-text-secondary">HAND <span className="text-foreground">#{tableGame.handNumber}</span></span>
-              <span className="text-text-secondary">{tableGame.street.toUpperCase()}</span>
+              <span className="text-text-secondary">HAND <span className="text-foreground">#{game.handNumber}</span></span>
+              <span className="text-text-secondary">{game.street.toUpperCase()}</span>
             </>
           )}
           {pagePhase === 'between_hand' && (
@@ -631,32 +553,28 @@ export default function OnlinePage() {
         </div>
       </header>
 
-      {/* ── テーブルエリア ── */}
       <main className="flex-1 flex flex-col items-stretch justify-between px-4 sm:px-8 lg:px-16 py-6 relative min-h-0">
-        {/* 背景グロー */}
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(255,46,151,0.06),transparent_65%)]" />
-        {/* フェルト */}
         <div className="poker-table-felt" aria-hidden />
 
-        {/* エラー通知 */}
         {serverError && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-crimson/20 border border-crimson text-crimson text-xs font-mono rounded-sm">
             {serverError}
           </div>
         )}
 
-        {/* ── 相手席 (上段) ── */}
+        {/* 相手席 */}
         <div className="flex justify-around items-start gap-4 sm:gap-8 lg:gap-16 relative z-10">
           {othersPlayers.map(p => (
             <div key={p.id} className="flex flex-col items-center">
               <PlayerSeat
                 player={p}
                 isMe={false}
-                isDealer={p.seat === (tableGame?.dealerSeat ?? -1)}
+                isDealer={p.seat === (game?.dealerSeat ?? -1)}
                 revealCards={isHandEnd}
                 bestHandName={isHandEnd ? showdownBestHand.get(p.id) : undefined}
-                isWinner={isHandEnd && winnerIds.has(p.id)}
-                isLoser={isHandEnd && showdownBestHand.has(p.id) && !winnerIds.has(p.id)}
+                isWinner={isHandEnd && winnerSet.has(p.id)}
+                isLoser={isHandEnd && showdownBestHand.has(p.id) && !winnerSet.has(p.id)}
               />
               <TurnTimerBar timer={turnTimer} playerId={p.id} />
             </div>
@@ -668,36 +586,29 @@ export default function OnlinePage() {
           )}
         </div>
 
-        {/* ── センター: ポット + コミュニティカード ── */}
+        {/* センター */}
         <div className="flex flex-col items-center gap-4 my-4 relative z-10">
-          {tableGame && (
+          {game && (
             <>
               <div className="flex items-center gap-3">
-                <PotDisplay amount={tableGame.totalPot} />
-                {!isHandEnd && tableGame.currentBetToCall > 0 && (
-                  <BettingInfo
-                    toCall={tableGame.currentBetToCall}
-                    minRaise={tableGame.minRaise + tableGame.currentBetToCall}
-                    bigBlind={10}
-                  />
+                <PotDisplay amount={game.totalPot} />
+                {!isHandEnd && game.currentBetToCall > 0 && (
+                  <BettingInfo toCall={game.currentBetToCall} minRaise={game.minRaise + game.currentBetToCall} bigBlind={10} />
                 )}
               </div>
-              <CommunityCards cards={tableGame.communityCards} />
+              <CommunityCards cards={game.communityCards} />
             </>
           )}
 
-          {/* ハンド結果 */}
           {isHandEnd && (showdown || handEnd) && (
             <div className="text-center space-y-1">
-              {showdown?.revealedHands
-                .filter(h => showdown.winnerIds.includes(h.playerId))
-                .map(h => (
-                  <p key={h.playerId} className="text-sm font-mono text-cyber-gold neon-text-gold">
-                    🏆 {h.handle} — {h.evalResult?.name}
-                  </p>
-                ))}
-              {handEnd?.type === 'fold_win' && handEnd.winners.map(w => (
-                <p key={w.handle} className="text-sm font-mono text-cyber-gold">
+              {showdown?.revealedHands.filter(h => showdown.winnerIds.includes(h.playerId)).map(h => (
+                <p key={h.playerId} className="text-sm font-mono text-cyber-gold neon-text-gold">
+                  🏆 {h.handle} — {h.evalResult?.name}
+                </p>
+              ))}
+              {handEnd?.result === 'fold_win' && handEnd.winners.map(w => (
+                <p key={w.playerId} className="text-sm font-mono text-cyber-gold">
                   🏆 {w.handle} wins ◉{w.amount} (fold)
                 </p>
               ))}
@@ -705,7 +616,7 @@ export default function OnlinePage() {
           )}
         </div>
 
-        {/* ── 自席 (下段) ── */}
+        {/* 自席 */}
         <div className="flex justify-center relative z-10">
           {mePlayer ? (
             <div className="flex flex-col items-center">
@@ -713,13 +624,13 @@ export default function OnlinePage() {
                 player={mePlayer}
                 isMe={true}
                 size="lg"
-                isDealer={mePlayer.seat === (tableGame?.dealerSeat ?? -1)}
+                isDealer={mePlayer.seat === (game?.dealerSeat ?? -1)}
                 revealCards={isHandEnd}
-                bestHandName={isHandEnd ? showdownBestHand.get(sessionId) : undefined}
-                isWinner={isHandEnd && winnerIds.has(sessionId)}
-                isLoser={isHandEnd && showdownBestHand.has(sessionId) && !winnerIds.has(sessionId)}
+                bestHandName={isHandEnd ? showdownBestHand.get(myId) : undefined}
+                isWinner={isHandEnd && winnerSet.has(myId)}
+                isLoser={isHandEnd && showdownBestHand.has(myId) && !winnerSet.has(myId)}
               />
-              <TurnTimerBar timer={turnTimer} playerId={sessionId} />
+              <TurnTimerBar timer={turnTimer} playerId={myId} />
             </div>
           ) : (
             <p className="text-xs text-text-secondary font-mono">Spectating…</p>
@@ -727,33 +638,28 @@ export default function OnlinePage() {
         </div>
       </main>
 
-      {/* ── アクションバー / ウェイティング ── */}
       <footer className="border-t border-border-default bg-surface-elevated/60 backdrop-blur-sm p-4 relative z-10 min-h-[80px]">
         {isHandEnd ? (
           <div className="flex items-center justify-center h-10 text-xs text-text-secondary font-mono tracking-[0.3em] animate-pulse">
             {pagePhase === 'between_hand' ? 'NEXT HAND IN 5s…' : 'HAND ENDED'}
           </div>
-        ) : isMyTurn && myGame && tableGame ? (
-          <OnlineActionBar tableGame={tableGame} myGame={myGame} onAction={doAction} />
+        ) : isMyTurn && myGame && game ? (
+          <OnlineActionBar game={game} myGame={myGame} onAction={doAction} />
         ) : (
           <div className="flex items-center justify-center h-10 text-xs text-text-secondary font-mono tracking-[0.3em]">
-            {myGame?.isTurn === false && tableGame
-              ? `WAITING — ${
-                  players.find(p => tableGame.playerGames.get(p.id)?.isTurn)?.handle ?? '…'
-                }'s turn`
+            {myGame?.isTurn === false && game
+              ? `WAITING — ${players.find(p => game.playerGames[p.id]?.isTurn)?.handle ?? '…'}'s turn`
               : 'WAITING…'}
           </div>
         )}
       </footer>
 
-      {/* ── チャット (折りたたみ) ── */}
       <div className="border-t border-border-default bg-surface/30 px-4 py-2">
         <div className="flex gap-2 max-w-2xl mx-auto">
           <input value={chatInput} onChange={e => setChatInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && sendChat()}
-            placeholder="chat…"
+            onKeyDown={e => e.key === 'Enter' && doSendChat()} placeholder="chat…"
             className="flex-1 px-3 py-1.5 bg-surface border border-border-default rounded-sm text-foreground font-mono text-xs" />
-          <button onClick={sendChat}
+          <button onClick={doSendChat}
             className="px-3 h-8 border border-border-default text-text-secondary rounded-sm text-xs hover:border-neon-blue hover:text-neon-blue">
             Send
           </button>

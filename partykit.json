@@ -1,0 +1,5 @@
+{
+  "name": "circuit23-poker",
+  "main": "party/circuit23.ts",
+  "compatibilityDate": "2024-11-01"
+}

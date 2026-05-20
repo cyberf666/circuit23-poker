@@ -1,30 +1,45 @@
 // =====================================================
-// Colyseus client — Phase 2 Step 2
+// Circuit23 Online Client — PartyKit 版
+// Colyseus.js から PartySocket に移行
 // =====================================================
 'use client';
-import { Client, Room } from 'colyseus.js';
+import PartySocket from 'partysocket';
 
-const COLYSEUS_URL =
-  process.env.NEXT_PUBLIC_COLYSEUS_URL ?? 'ws://localhost:2567';
+/**
+ * PartyKit ホスト
+ * - ローカル開発:   localhost:1999
+ * - 本番 (Vercel):  NEXT_PUBLIC_PARTYKIT_HOST に PartyKit ドメインを設定
+ *                   例: circuit23-poker.takum.partykit.dev
+ */
+export const PARTYKIT_HOST =
+  process.env.NEXT_PUBLIC_PARTYKIT_HOST ?? 'localhost:1999';
 
-let _client: Client | null = null;
-
-export function getColyseusClient(): Client {
-  if (!_client) {
-    _client = new Client(COLYSEUS_URL);
-  }
-  return _client;
-}
+export const PARTY_NAME = 'circuit23';
+export const DEFAULT_ROOM = 'main';
 
 export interface JoinOptions {
   handle?: string;
   address?: string;
   labels?: string[];
+  roomId?: string;
 }
 
-export async function joinCircuit23(options: JoinOptions = {}): Promise<Room> {
-  const client = getColyseusClient();
-  return client.joinOrCreate('circuit23', options);
+/**
+ * PartyKit room に接続して PartySocket を返す。
+ * handle / labels は URL クエリパラメータとして渡す。
+ */
+export function joinCircuit23(options: JoinOptions = {}): PartySocket {
+  const { handle = 'guest', labels = ['GUEST'], roomId = DEFAULT_ROOM } = options;
+
+  return new PartySocket({
+    host: PARTYKIT_HOST,
+    room: roomId,
+    party: PARTY_NAME,
+    query: {
+      handle: handle.slice(0, 24),
+      labels: labels.join(','),
+    },
+  });
 }
 
 // ── ゲームアクション送信ヘルパー ──────────────────
@@ -38,13 +53,17 @@ export type ActionType =
   | 'ALL_IN';
 
 export function sendAction(
-  room: Room,
+  socket: PartySocket,
   type: ActionType,
   amount?: number,
 ): void {
-  room.send('action', { type, amount });
+  socket.send(JSON.stringify({ type: 'action', action: type, amount }));
 }
 
-export function sendReady(room: Room, ready: boolean): void {
-  room.send('ready', { ready });
+export function sendReady(socket: PartySocket, ready: boolean): void {
+  socket.send(JSON.stringify({ type: 'ready', ready }));
+}
+
+export function sendChat(socket: PartySocket, text: string): void {
+  socket.send(JSON.stringify({ type: 'chat', text }));
 }
