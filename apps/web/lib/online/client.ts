@@ -14,7 +14,7 @@ import PartySocket from 'partysocket';
 export const PARTYKIT_HOST =
   process.env.NEXT_PUBLIC_PARTYKIT_HOST ?? 'localhost:1999';
 
-export const PARTY_NAME = 'circuit23';
+export const PARTY_NAME = 'main';   // partykit.json の "main" フィールドに対応
 export const DEFAULT_ROOM = 'main';
 
 export interface JoinOptions {
