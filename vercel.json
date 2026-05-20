@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "pnpm install --frozen-lockfile=false && pnpm --filter @ntp-poker/web build",
+  "installCommand": "echo 'skip'",
+  "outputDirectory": "apps/web/.next",
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- apps/web packages"
+}
