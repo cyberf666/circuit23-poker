@@ -107,6 +107,12 @@ export interface HandDelta {
   delta: number;
 }
 
+export interface PlayerProfile {
+  handle: string;
+  address?: string;
+  avatarUrl?: string;
+}
+
 interface GameStore {
   state: TableState | null;
   deck: Card[];
@@ -118,10 +124,13 @@ interface GameStore {
   handDeltas: HandDelta[] | null;
   currentDealerSeat: Seat;
   handCounter: number;
+  /** エントリーモーダルで設定されたプレイヤープロフィール */
+  playerProfile: PlayerProfile | null;
 
   initGame: () => void;
   submitAction: (type: ActionType, amount?: number) => Promise<void>;
   startNextHand: () => void;
+  setPlayerProfile: (profile: PlayerProfile) => void;
 }
 
 // ────────────────────────────────────────────────────
@@ -163,10 +172,29 @@ export const useGameStore = create<GameStore>((set, get) => ({
   handDeltas: null,
   currentDealerSeat: 0 as Seat,
   handCounter: 0,
+  playerProfile: null,
+
+  setPlayerProfile: (profile: PlayerProfile) => {
+    set({ playerProfile: profile });
+  },
 
   initGame: () => {
     cancelPendingSchedule();
+    const { playerProfile } = get();
     const players = createSoloPlayers();
+
+    // エントリーモーダルで入力されたプロフィールをヒューマンプレイヤーに反映
+    if (playerProfile) {
+      const humanIdx = players.findIndex((p) => !p.isCpu);
+      if (humanIdx !== -1) {
+        players[humanIdx] = {
+          ...players[humanIdx]!,
+          handle: playerProfile.handle || players[humanIdx]!.handle,
+          address: playerProfile.address,
+          avatarUrl: playerProfile.avatarUrl,
+        };
+      }
+    }
     const dealerSeat = 0 as Seat;
     const { state, deck } = startNewHand({
       tableId: 'solo-1',

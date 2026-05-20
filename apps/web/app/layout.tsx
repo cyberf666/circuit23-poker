@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Orbitron, Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
+import { Web3Provider } from '../components/providers/Web3Provider';
 
 const orbitron = Orbitron({
   variable: '--font-orbitron',
@@ -37,7 +38,7 @@ export default function RootLayout({
       className={`${orbitron.variable} ${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground scanlines">
-        {children}
+        <Web3Provider>{children}</Web3Provider>
       </body>
     </html>
   );

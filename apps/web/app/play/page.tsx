@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { evaluateHand } from '@ntp-poker/game-core';
 import { useGameStore } from '../../lib/store/gameStore';
@@ -7,6 +7,7 @@ import { CommunityCards } from '../../components/CommunityCards';
 import { PlayerSeat } from '../../components/PlayerSeat';
 import { ActionBar } from '../../components/ActionBar';
 import { PotDisplay, BettingInfo } from '../../components/Chip';
+import { EntryModal, type EntryProfile } from '../../components/EntryModal';
 
 export default function PlayPage() {
   const state = useGameStore((s) => s.state);
@@ -18,14 +19,22 @@ export default function PlayPage() {
   const message = useGameStore((s) => s.message);
   const initGame = useGameStore((s) => s.initGame);
   const startNextHand = useGameStore((s) => s.startNextHand);
+  const setPlayerProfile = useGameStore((s) => s.setPlayerProfile);
 
-  useEffect(() => {
-    if (!state) {
+  // ── Entry flow ──────────────────────────────────────────
+  const [entered, setEntered] = useState(false);
+
+  const handleEnter = useCallback(
+    (profile: EntryProfile) => {
+      setPlayerProfile(profile);
+      setEntered(true);
       initGame();
-    }
-  }, [state, initGame]);
+    },
+    [setPlayerProfile, initGame],
+  );
 
   // Street announcement: FLOP/TURN/RIVER/SHOWDOWN が変わった瞬間にバナー表示
+  // (Hooks must all be declared before any early return)
   const [streetAnnounce, setStreetAnnounce] = useState<string | null>(null);
   const prevStreet = useRef<string>('');
   const prevHand = useRef<number>(0);
@@ -45,6 +54,11 @@ export default function PlayPage() {
     prevStreet.current = state.street;
     prevHand.current = state.handNumber;
   }, [state?.street, state?.handNumber, state]);
+
+  // ── Early returns (after all hooks) ─────────────────────
+  if (!entered) {
+    return <EntryModal onEnter={handleEnter} />;
+  }
 
   if (!state) {
     return (
