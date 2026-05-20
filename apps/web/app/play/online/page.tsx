@@ -13,6 +13,7 @@ import { PlayerSeat } from '../../../components/PlayerSeat';
 import { PotDisplay, BettingInfo } from '../../../components/Chip';
 import type { ActionType } from '../../../lib/online/client';
 import type { Player, Card, PlayerLabel, Seat } from '@ntp-poker/types';
+import { GAME_CONFIG } from '@ntp-poker/game-core';
 
 // ── 内部データ型 ─────────────────────────────────────
 
@@ -164,12 +165,19 @@ function OnlineActionBar({
   const [betAmount, setBetAmount] = useState(minBet);
   useEffect(() => { setBetAmount(minBet); }, [minBet]);
 
-  const potHalf = Math.max(minBet, Math.floor(tableGame.totalPot / 2));
-  const potFull = Math.max(minBet, tableGame.totalPot);
+  // RAISE TO xxx (+増加額)
+  const raiseIncrement = betAmount - myGame.currentBet;
 
   const handleBet = () => {
     const amt = Math.min(Math.max(betAmount, minBet), maxBet);
     onAction(canBet ? 'BET' : 'RAISE', amt);
+  };
+
+  /**
+   * 増減ボタン: delta 分だけ betAmount を加減算し、min/max にクランプ
+   */
+  const adjustBet = (delta: number) => {
+    setBetAmount((prev) => Math.min(Math.max(prev + delta, minBet), maxBet));
   };
 
   const btn = (
@@ -206,32 +214,43 @@ function OnlineActionBar({
         <span className="text-foreground font-bold tabular-nums">{myGame.stack.toLocaleString()}</span>
       </div>
 
-      {/* クイックサイズ */}
+      {/* クイックサイズ — 増減ボタン */}
       {(canBet || canRaise) && (
-        <div className="flex gap-2 items-center justify-center text-xs">
-          <span className="text-text-secondary font-mono tracking-wider">QUICK:</span>
-          {[
-            { label: '1/2 POT', value: potHalf },
-            { label: 'POT', value: potFull },
-            { label: 'ALL-IN', value: maxBet },
-          ].map(opt => (
-            <button key={opt.label}
-              onClick={() => setBetAmount(Math.min(opt.value, maxBet))}
-              className="px-3 py-1 border border-border-default rounded-sm text-text-secondary hover:border-neon-pink hover:text-neon-pink transition-colors font-mono">
-              {opt.label}
-            </button>
-          ))}
+        <div className="flex gap-1.5 items-center justify-center text-xs flex-wrap">
+          <span className="text-text-secondary font-mono tracking-wider">±</span>
+          {GAME_CONFIG.QUICK_BET_INCREMENTS.map((delta) => {
+            const isPositive = delta > 0;
+            return (
+              <button key={delta}
+                onClick={() => adjustBet(delta)}
+                className={`px-2.5 py-1 border rounded-sm font-mono transition-colors ${
+                  isPositive
+                    ? 'border-border-default text-neon-blue hover:border-neon-blue hover:bg-neon-blue/10'
+                    : 'border-border-default text-text-secondary hover:border-crimson hover:text-crimson'
+                }`}>
+                {isPositive ? `+${delta}` : `${delta}`}
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setBetAmount(maxBet)}
+            className="px-2.5 py-1 border border-border-default rounded-sm text-cyber-gold hover:border-cyber-gold font-mono transition-colors">
+            ALL-IN
+          </button>
         </div>
       )}
 
-      {/* スライダー */}
+      {/* スライダー — min=minBet(minRaise), max=スタック全額 */}
       {(canBet || canRaise) && (
         <div className="flex items-center gap-3">
           <input type="range" min={minBet} max={maxBet} value={betAmount} step={10}
             onChange={e => setBetAmount(Number(e.target.value))}
             className="flex-1 accent-neon-pink" />
           <input type="number" value={betAmount} min={minBet} max={maxBet}
-            onChange={e => setBetAmount(Number(e.target.value))}
+            onChange={e => {
+              const v = Number(e.target.value);
+              setBetAmount(Math.min(Math.max(v, minBet), maxBet));
+            }}
             className="w-24 px-2 py-1 bg-surface border border-border-default rounded-sm text-foreground font-mono text-right" />
         </div>
       )}
@@ -243,7 +262,9 @@ function OnlineActionBar({
         {canCall && btn(`CALL ${callAmt.toLocaleString()}`, () => onAction('CALL'), 'secondary')}
         {canCallPartial && btn(`ALL-IN ${myGame.stack.toLocaleString()}`, () => onAction('CALL'), 'secondary')}
         {(canBet || canRaise) && btn(
-          `${canBet ? 'BET' : 'RAISE TO'} ${betAmount.toLocaleString()}`,
+          canBet
+            ? `BET ${betAmount.toLocaleString()}`
+            : `RAISE TO ${betAmount.toLocaleString()}${raiseIncrement > 0 ? ` (+${raiseIncrement.toLocaleString()})` : ''}`,
           handleBet,
           'primary',
           betAmount < minBet || betAmount > maxBet,

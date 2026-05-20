@@ -1,7 +1,7 @@
 'use client';
 import { useState, useMemo } from 'react';
 import { TableState } from '@ntp-poker/types';
-import { getValidActions } from '@ntp-poker/game-core';
+import { getValidActions, GAME_CONFIG } from '@ntp-poker/game-core';
 import { useGameStore } from '../lib/store/gameStore';
 
 interface Props {
@@ -38,9 +38,11 @@ export function ActionBar({ state, myPlayerId }: Props) {
   const yourInvested = me.totalBet;
   const toCall = valid.callAmount;
 
-  const potHalf = Math.max(state.config.bigBlind, Math.floor(state.totalPot * 0.5));
-  const potFull = Math.max(state.config.bigBlind, state.totalPot);
-  const potDouble = Math.max(state.config.bigBlind, state.totalPot * 2);
+  // ベット/レイズの最小値
+  const minBetValue = valid.canBet ? valid.minBet : valid.minRaise;
+
+  // RAISE TO xxx (+増加額) の表記用: 増加額 = betAmount - me.currentBet
+  const raiseIncrement = betAmount - me.currentBet;
 
   const handleBet = () => {
     if (valid.canBet) {
@@ -48,6 +50,13 @@ export function ActionBar({ state, myPlayerId }: Props) {
     } else if (valid.canRaise) {
       submitAction('RAISE', Math.min(betAmount, valid.maxBet));
     }
+  };
+
+  /**
+   * 増減ボタン: 現在の betAmount に delta を加算し、min/max にクランプ
+   */
+  const adjustBet = (delta: number) => {
+    setBetAmount((prev) => Math.min(Math.max(prev + delta, minBetValue), valid.maxBet));
   };
 
   return (
@@ -87,35 +96,43 @@ export function ActionBar({ state, myPlayerId }: Props) {
         </div>
       </div>
 
-      {/* Quick bet sizes */}
+      {/* Quick bet sizes — 増減ボタン */}
       {(valid.canBet || valid.canRaise) && (
-        <div className="flex gap-2 items-center justify-center text-xs">
+        <div className="flex gap-1.5 items-center justify-center text-xs flex-wrap">
           <span className="text-text-secondary font-mono tracking-wider">
-            QUICK:
+            ±
           </span>
-          {[
-            { label: '1/2 POT', value: potHalf },
-            { label: 'POT', value: potFull },
-            { label: '2x POT', value: potDouble },
-            { label: 'ALL-IN', value: valid.maxBet },
-          ].map((opt) => (
-            <button
-              key={opt.label}
-              onClick={() => setBetAmount(Math.min(opt.value, valid.maxBet))}
-              className="px-3 py-1 border border-border-default rounded-sm text-text-secondary hover:border-neon-pink hover:text-neon-pink transition-colors font-mono"
-            >
-              {opt.label}
-            </button>
-          ))}
+          {GAME_CONFIG.QUICK_BET_INCREMENTS.map((delta) => {
+            const isPositive = delta > 0;
+            return (
+              <button
+                key={delta}
+                onClick={() => adjustBet(delta)}
+                className={`px-2.5 py-1 border rounded-sm font-mono transition-colors ${
+                  isPositive
+                    ? 'border-border-default text-neon-blue hover:border-neon-blue hover:bg-neon-blue/10'
+                    : 'border-border-default text-text-secondary hover:border-crimson hover:text-crimson'
+                }`}
+              >
+                {isPositive ? `+${delta}` : `${delta}`}
+              </button>
+            );
+          })}
+          <button
+            onClick={() => setBetAmount(valid.maxBet)}
+            className="px-2.5 py-1 border border-border-default rounded-sm text-cyber-gold hover:border-cyber-gold font-mono transition-colors"
+          >
+            ALL-IN
+          </button>
         </div>
       )}
 
-      {/* Bet slider */}
+      {/* Bet slider — min=minRaise, max=スタック全額 */}
       {(valid.canBet || valid.canRaise) && (
         <div className="flex items-center gap-3">
           <input
             type="range"
-            min={valid.canBet ? valid.minBet : valid.minRaise}
+            min={minBetValue}
             max={valid.maxBet}
             value={betAmount}
             step={state.config.bigBlind}
@@ -125,9 +142,12 @@ export function ActionBar({ state, myPlayerId }: Props) {
           <input
             type="number"
             value={betAmount}
-            min={valid.canBet ? valid.minBet : valid.minRaise}
+            min={minBetValue}
             max={valid.maxBet}
-            onChange={(e) => setBetAmount(Number(e.target.value))}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setBetAmount(Math.min(Math.max(v, minBetValue), valid.maxBet));
+            }}
             className="w-24 px-2 py-1 bg-surface border border-border-default rounded-sm text-foreground font-mono text-right"
           />
         </div>
@@ -156,11 +176,20 @@ export function ActionBar({ state, myPlayerId }: Props) {
         )}
         {(valid.canBet || valid.canRaise) && (
           <ActionButton
-            label={`${valid.canBet ? 'BET' : 'RAISE TO'} ${betAmount.toLocaleString()}`}
+            label={
+              valid.canBet
+                ? `BET ${betAmount.toLocaleString()}`
+                : `RAISE TO ${betAmount.toLocaleString()}`
+            }
+            subLabel={
+              valid.canRaise && raiseIncrement > 0
+                ? `+${raiseIncrement.toLocaleString()}`
+                : undefined
+            }
             onClick={handleBet}
             variant="primary"
             disabled={
-              betAmount < (valid.canBet ? valid.minBet : valid.minRaise) ||
+              betAmount < minBetValue ||
               betAmount > valid.maxBet
             }
           />
@@ -172,14 +201,16 @@ export function ActionBar({ state, myPlayerId }: Props) {
 
 interface ButtonProps {
   label: string;
+  /** 増加額などの補助テキスト（小さめに表示） */
+  subLabel?: string;
   onClick: () => void;
   variant: 'primary' | 'secondary' | 'ghost';
   disabled?: boolean;
 }
 
-function ActionButton({ label, onClick, variant, disabled }: ButtonProps) {
+function ActionButton({ label, subLabel, onClick, variant, disabled }: ButtonProps) {
   const base =
-    'h-12 px-4 rounded-sm text-sm font-bold tracking-[0.15em] uppercase transition-all active:scale-95';
+    'h-12 px-4 rounded-sm text-sm font-bold tracking-[0.15em] uppercase transition-all active:scale-95 flex flex-col items-center justify-center gap-0';
   const variants = {
     primary:
       'bg-neon-pink text-background neon-glow-pink hover:scale-[1.02] disabled:opacity-40 disabled:scale-100',
@@ -193,7 +224,12 @@ function ActionButton({ label, onClick, variant, disabled }: ButtonProps) {
       disabled={disabled}
       className={`${base} ${variants[variant]}`}
     >
-      {label}
+      <span>{label}</span>
+      {subLabel && (
+        <span className="text-[10px] font-normal opacity-80 tracking-normal normal-case">
+          {subLabel}
+        </span>
+      )}
     </button>
   );
 }

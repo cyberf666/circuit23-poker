@@ -11,6 +11,8 @@ export * from './betting';
 export * from './cpu';
 export * from './hand';
 
+export * from './config/gameConfig';
+
 // Re-export types for convenience
 export type {
   Card,

@@ -43,15 +43,39 @@ const ACTION_COLOR: Record<string, string> = {
   POST_BLIND: 'text-text-secondary',
 };
 
-const ACTION_LABEL: Record<string, string> = {
-  FOLD: 'FOLD',
-  CHECK: 'CHECK',
-  CALL: 'CALL',
-  BET: 'BET',
-  RAISE: 'RAISE',
-  ALL_IN: 'ALL-IN',
-  POST_BLIND: 'BLIND',
-};
+/**
+ * プレイヤーのアクションラベルを生成する。
+ * 金額を伴うアクション（CALL/BET/RAISE）は currentBet か totalBet を付ける。
+ */
+function buildActionLabel(
+  action: string,
+  player: { currentBet: number; totalBet: number },
+): string {
+  switch (action) {
+    case 'FOLD':
+      return 'FOLDED';
+    case 'CHECK':
+      return 'CHECKED';
+    case 'CALL': {
+      const amt = player.currentBet > 0 ? player.currentBet : player.totalBet;
+      return amt > 0 ? `CALLED ${amt.toLocaleString()}` : 'CALLED';
+    }
+    case 'BET': {
+      const amt = player.currentBet > 0 ? player.currentBet : player.totalBet;
+      return amt > 0 ? `BET ${amt.toLocaleString()}` : 'BET';
+    }
+    case 'RAISE': {
+      const amt = player.currentBet > 0 ? player.currentBet : player.totalBet;
+      return amt > 0 ? `RAISED TO ${amt.toLocaleString()}` : 'RAISED';
+    }
+    case 'ALL_IN':
+      return 'ALL-IN';
+    case 'POST_BLIND':
+      return 'BLIND';
+    default:
+      return action;
+  }
+}
 
 // FOLDEDバッジは showdown 文脈（他に bestHandName が出ている人がいる）のときのみ意味があるので、
 // 単にハンド進行中の fold は opacity-40 だけで十分。簡易判定として bestHandName が定義済みかつ非勝者で fold = ハンド終了時の fold とみなす。
@@ -267,7 +291,7 @@ export function PlayerSeat({
             ACTION_COLOR[player.lastAction] ?? 'text-foreground'
           }`}
         >
-          {ACTION_LABEL[player.lastAction] ?? player.lastAction}
+          {buildActionLabel(player.lastAction, player)}
         </div>
       )}
 
