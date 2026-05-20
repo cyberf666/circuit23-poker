@@ -13,7 +13,7 @@ import {
   evaluateHand,
   drawCards,
   getValidActions,
-} from '@ntp-poker/game-core';
+} from '../packages/game-core/src/index';
 import type {
   Action,
   ActionType,
@@ -23,7 +23,7 @@ import type {
   Seat,
   TableConfig,
   TableState,
-} from '@ntp-poker/types';
+} from '../packages/types/src/index';
 
 // ── テーブル設定 ────────────────────────────────────
 
