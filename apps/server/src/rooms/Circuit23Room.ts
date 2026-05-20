@@ -1,9 +1,8 @@
 // =====================================================
-// Circuit23Room - Phase 2 Step 2
-//   - game-core の applyAction をサーバー側で処理
-//   - TableGameState を schema 経由で全クライアントに同期
-//   - ホールカードは Room.send() で本人のみに配信
-//   - all-in ボードランアウト / showdown / 勝敗処理
+// Circuit23Room - Phase 2 Step 3
+//   - 30秒ターンタイムアウト → auto-fold
+//   - 30秒再接続猶予 (allowReconnection)
+//   - turn_timer ブロードキャスト
 // =====================================================
 import { Room, Client } from '@colyseus/core';
 import {
@@ -45,6 +44,9 @@ const DEFAULT_TABLE_CONFIG: TableConfig = {
   maxBuyIn: 1000,
 };
 
+const TURN_TIMEOUT_MS = 30_000;
+const RECONNECT_TIMEOUT_S = 30;
+
 interface JoinOptions {
   handle?: string;
   address?: string;
@@ -60,6 +62,10 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
   private _tableState: TableState | null = null;
   private _deck: Card[] = [];
   private _dealerSeat: Seat = 0;
+
+  /** ターンタイマー */
+  private _turnTimer: ReturnType<typeof setTimeout> | null = null;
+  private _turnPlayerId: string | null = null;
 
   // ━━ onCreate ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -131,15 +137,51 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
     console.log(`[C23] join: ${handle} (seat ${ps.seat})`);
   }
 
-  override onLeave(client: Client, consented: boolean) {
+  override async onLeave(client: Client, consented: boolean) {
     const ps = this.state.players.get(client.sessionId);
     const handle = ps?.handle ?? client.sessionId.slice(0, 6);
 
+    // In-hand かつ意図しない切断 → 再接続猶予 30 秒
+    if (!consented && this._tableState && this.state.phase === 'in_hand') {
+      console.log(`[C23] ${handle} disconnected mid-hand, awaiting reconnect (${RECONNECT_TIMEOUT_S}s)`);
+      this.state.message = `${handle} disconnected…`;
+      this.broadcast('chat', {
+        from: 'CIRCUIT-23',
+        text: `${handle} disconnected — waiting ${RECONNECT_TIMEOUT_S}s for reconnect`,
+        at: Date.now(),
+      });
+
+      try {
+        await this.allowReconnection(client, RECONNECT_TIMEOUT_S);
+        // ─ 再接続成功 ─
+        console.log(`[C23] ${handle} reconnected`);
+        this.state.message = `${handle} reconnected`;
+        this.broadcast('chat', {
+          from: 'CIRCUIT-23',
+          text: `${handle} reconnected`,
+          at: Date.now(),
+        });
+        // ホールカードを再送
+        const gp = this._tableState?.players[client.sessionId];
+        if (gp?.holeCards?.length && this._tableState) {
+          client.send('hole-cards', {
+            cards: gp.holeCards,
+            handNumber: this._tableState.handNumber,
+          });
+        }
+        return; // 通常の leave 処理をスキップ
+      } catch {
+        // 再接続タイムアウト → 通常の leave 処理へ
+        console.log(`[C23] ${handle} reconnect timeout`);
+      }
+    }
+
+    // ─ 通常の leave ─
     this.state.players.delete(client.sessionId);
     this.state.message = `${handle} left`;
     console.log(`[C23] leave: ${handle} (consented=${consented})`);
 
-    // In-hand中かつそのプレイヤーのターンならオートフォールド
+    // In-hand 中かつそのプレイヤーのターンならオートフォールド
     if (this._tableState && this.state.phase === 'in_hand') {
       const gp = this._tableState.players[client.sessionId];
       if (gp?.status === 'active' && gp.isTurn) {
@@ -149,6 +191,7 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
   }
 
   override onDispose() {
+    this._clearTurnTimer();
     console.log(`[C23 ${this.roomId}] disposed`);
   }
 
@@ -245,6 +288,9 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
       return;
     }
 
+    // アクション受付 → タイマークリア
+    this._clearTurnTimer();
+
     try {
       const action: Action = {
         playerId,
@@ -281,6 +327,8 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
     const gp = this._tableState.players[playerId];
     if (!gp || gp.status !== 'active') return;
 
+    this._clearTurnTimer();
+
     try {
       const action: Action = {
         playerId,
@@ -304,6 +352,7 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
   // ━━ ハンド終了（フォールド勝ち） ━━━━━━━━━━━━━━━━━━━━━
 
   private _endHand() {
+    this._clearTurnTimer();
     const ts = this._tableState!;
     const stillIn = Object.values(ts.players).filter(p => p.status !== 'folded');
 
@@ -374,6 +423,7 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
   // ━━ ショーダウン ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   private _resolveShowdown() {
+    this._clearTurnTimer();
     const ts = this._tableState!;
     const contenders = Object.values(ts.players).filter(
       p => p.status === 'active' || p.status === 'allin',
@@ -481,6 +531,45 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
     }, 5_000);
   }
 
+  // ━━ ターンタイマー ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  private _startTurnTimer(playerId: string) {
+    this._clearTurnTimer();
+    this._turnPlayerId = playerId;
+    const deadline = Date.now() + TURN_TIMEOUT_MS;
+
+    // 全クライアントにタイマー情報を送信
+    this.broadcast('turn_timer', {
+      playerId,
+      deadline,
+      timeoutMs: TURN_TIMEOUT_MS,
+    });
+
+    this._turnTimer = setTimeout(() => {
+      this._turnTimer = null;
+      this._turnPlayerId = null;
+      const handle = this._getHandle(playerId);
+      console.log(`[C23] turn timeout → auto-fold: ${handle}`);
+      this.broadcast('chat', {
+        from: 'CIRCUIT-23',
+        text: `${handle} timed out — auto-fold`,
+        at: Date.now(),
+      });
+      this._autoFold(playerId);
+    }, TURN_TIMEOUT_MS);
+  }
+
+  private _clearTurnTimer() {
+    if (this._turnTimer) {
+      clearTimeout(this._turnTimer);
+      this._turnTimer = null;
+    }
+    if (this._turnPlayerId) {
+      this.broadcast('turn_timer_clear', { playerId: this._turnPlayerId });
+      this._turnPlayerId = null;
+    }
+  }
+
   // ━━ スキーマ同期 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   /** TableState → Circuit23RoomState.tableGame に公開情報を反映 */
@@ -509,7 +598,6 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
 
     // プレイヤーゲーム状態
     const inGameIds = new Set(Object.keys(ts.players));
-    // 不要エントリ削除（2パスで安全に）
     const toDelete: string[] = [];
     tg.playerGames.forEach((_v, id) => {
       if (!inGameIds.has(id)) toDelete.push(id);
@@ -534,6 +622,16 @@ export class Circuit23Room extends Room<Circuit23RoomState> {
     for (const [id, gp] of Object.entries(ts.players)) {
       const ps = this.state.players.get(id);
       if (ps) ps.stack = gp.stack;
+    }
+
+    // ターンのあるプレイヤーが存在する場合、タイマー開始
+    const activePlayer = Object.values(ts.players).find(
+      p => p.isTurn && p.status === 'active',
+    );
+    if (activePlayer) {
+      this._startTurnTimer(activePlayer.id);
+    } else {
+      this._clearTurnTimer();
     }
   }
 

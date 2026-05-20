@@ -15,11 +15,22 @@ import { WebSocketTransport } from '@colyseus/ws-transport';
 import { Circuit23Room } from './rooms/Circuit23Room.js';
 
 const PORT = parseInt(process.env.PORT ?? '2567', 10);
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? 'http://localhost:3000';
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN ?? 'http://localhost:3000')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
 
 // ── HTTP layer (healthcheck + admin) ──
 const app = express();
-app.use(cors({ origin: ALLOWED_ORIGIN, credentials: true }));
+app.use(cors({
+  origin: (origin, callback) => {
+    // allow same-origin / non-browser requests
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.some(o => origin === o)) return callback(null, true);
+    callback(new Error(`CORS: origin ${origin} not allowed`));
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 app.get('/health', (_req, res) => {
@@ -57,7 +68,7 @@ httpServer.listen(PORT, () => {
   console.log(`  HTTP    : http://localhost:${PORT}/health`);
   console.log(`  WS      : ws://localhost:${PORT}`);
   console.log(`  Room    : circuit23`);
-  console.log(`  Origin  : ${ALLOWED_ORIGIN}`);
+  console.log(`  Origins : ${ALLOWED_ORIGINS.join(', ')}`);
   console.log('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('');
 });
