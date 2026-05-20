@@ -104,6 +104,14 @@ export default class Circuit23Server implements Party.Server {
 
   constructor(readonly room: Party.Room) {}
 
+  // ━━ HTTP ヘルスチェック ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  async onRequest(req: Party.Request): Promise<Response> {
+    if (req.method === 'GET') {
+      return Response.json({ ok: true, server: 'circuit23', room: this.room.id, ts: Date.now() });
+    }
+    return new Response('Method Not Allowed', { status: 405 });
+  }
+
   // ━━ ライフサイクル ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
