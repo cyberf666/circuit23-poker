@@ -1,0 +1,30 @@
+# fly.toml — CIRCUIT 23 Colyseus game server
+# https://fly.io/docs/reference/configuration/
+app = "circuit23-poker"
+primary_region = "nrt"  # Tokyo region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "2567"
+  ALLOWED_ORIGIN = "https://neotokyopunks-poker.vercel.app"
+
+[http_service]
+  internal_port = 2567
+  force_https = true
+  auto_stop_machines = false   # never sleep
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
