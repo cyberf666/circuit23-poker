@@ -251,13 +251,40 @@ function OnlineActionBar({
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-type PagePhase = 'idle' | 'connecting' | 'lobby' | 'in_hand' | 'between_hand' | 'error';
+// ── テーブル定義 ─────────────────────────────────────
+
+const TABLES = [
+  { id: 'sector-23',   name: 'SECTOR 23',   label: 'MAIN FLOOR',   blinds: '5 / 10', desc: 'Open entry · 6-max' },
+  { id: 'neon-lounge', name: 'NEON LOUNGE', label: 'LATE NIGHT',   blinds: '5 / 10', desc: 'After dark session' },
+  { id: 'cyber-den',   name: 'CYBER DEN',   label: 'UNDERGROUND',  blinds: '5 / 10', desc: 'Deep circuit zone' },
+] as const;
+type TableId = typeof TABLES[number]['id'];
+
+// ── テーブル状態フェッチ ──────────────────────────────
+
+async function fetchTableInfo(roomId: string): Promise<{ playerCount: number; phase: string }> {
+  try {
+    const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST ?? 'localhost:1999';
+    const proto = host.startsWith('localhost') ? 'http' : 'https';
+    const res = await fetch(`${proto}://${host}/parties/main/${roomId}`, { signal: AbortSignal.timeout(4000) });
+    if (!res.ok) return { playerCount: 0, phase: 'lobby' };
+    return await res.json();
+  } catch {
+    return { playerCount: 0, phase: 'lobby' };
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+type PagePhase = 'table_select' | 'connecting' | 'lobby' | 'in_hand' | 'between_hand' | 'error';
 
 export default function OnlinePage() {
-  const [pagePhase, setPagePhase] = useState<PagePhase>('idle');
+  const [pagePhase, setPagePhase] = useState<PagePhase>('table_select');
   const [error, setError] = useState<string | null>(null);
   const [myId, setMyId] = useState('');
   const [handle, setHandle] = useState('');
+  const [selectedTable, setSelectedTable] = useState<TableId | null>(null);
+  const [tableCounts, setTableCounts] = useState<Record<string, { playerCount: number; phase: string }>>({});
   const [players, setPlayers] = useState<PlayerInfo[]>([]);
   const [game, setGame] = useState<PublicGame | null>(null);
   const [holeCards, setHoleCards] = useState<HoleCards | null>(null);
@@ -270,14 +297,34 @@ export default function OnlinePage() {
   const [chatInput, setChatInput] = useState('');
   const socketRef = useRef<PartySocket | null>(null);
 
+  // ── テーブル情報ポーリング ─────────────────────────
+
+  useEffect(() => {
+    if (pagePhase !== 'table_select') return;
+    let cancelled = false;
+    const refresh = async () => {
+      const results = await Promise.all(
+        TABLES.map(async t => ({ id: t.id, info: await fetchTableInfo(t.id) }))
+      );
+      if (!cancelled) {
+        const counts: Record<string, { playerCount: number; phase: string }> = {};
+        results.forEach(r => { counts[r.id] = r.info; });
+        setTableCounts(counts);
+      }
+    };
+    refresh();
+    const timer = setInterval(refresh, 8000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [pagePhase]);
+
   // ── 接続 ──────────────────────────────────────────
 
-  const connect = () => {
+  const connect = (roomId: TableId) => {
     if (!handle.trim()) return;
     setPagePhase('connecting');
     setError(null);
 
-    const socket = joinCircuit23({ handle: handle.trim(), labels: ['GUEST'] });
+    const socket = joinCircuit23({ handle: handle.trim(), labels: ['GUEST'], roomId });
     socketRef.current = socket;
 
     // 接続成功時に自分の ID を保存
@@ -341,13 +388,14 @@ export default function OnlinePage() {
 
     socket.addEventListener('close', () => {
       socketRef.current = null;
-      setPagePhase('idle');
+      setPagePhase('table_select');
       setGame(null);
       setHoleCards(null);
       setIsReady(false);
       setTurnTimer(null);
       setShowdown(null);
       setHandEnd(null);
+      setSelectedTable(null);
     });
 
     socket.addEventListener('error', () => {
@@ -359,7 +407,8 @@ export default function OnlinePage() {
   const disconnect = () => {
     socketRef.current?.close();
     socketRef.current = null;
-    setPagePhase('idle');
+    setPagePhase('table_select');
+    setSelectedTable(null);
   };
 
   const toggleReady = () => {
@@ -402,44 +451,111 @@ export default function OnlinePage() {
   const buildP = (pi: PlayerInfo) =>
     buildPlayer(pi, game?.playerGames[pi.id], holeCards?.cards ?? [], myId, showdown ?? null);
 
-  // ── アイドル・エラー画面 ──
+  // ── テーブル選択 ──
 
-  if (pagePhase === 'idle' || pagePhase === 'error' || pagePhase === 'connecting') {
+  if (pagePhase === 'table_select' || pagePhase === 'connecting' || pagePhase === 'error') {
+    const isConnecting = pagePhase === 'connecting';
     return (
-      <div className="flex flex-1 items-center justify-center px-4">
-        <div className="w-full max-w-sm space-y-6">
-          <div className="text-center">
-            <Link href="/" className="font-display font-bold tracking-wider text-2xl">
-              CIRCUIT <span className="neon-text-gold">23</span>
-            </Link>
-            <p className="text-xs text-text-secondary font-mono tracking-[0.3em] mt-1">ONLINE TABLE</p>
-          </div>
+      <div className="flex flex-col flex-1 px-4 sm:px-8 py-8 max-w-2xl mx-auto w-full gap-8">
+        {/* ヘッダー */}
+        <header className="flex items-center justify-between">
+          <Link href="/" className="font-display font-bold tracking-wider text-xl hover:text-neon-pink transition-colors">
+            CIRCUIT <span className="neon-text-gold">23</span>
+          </Link>
+          <span className="text-xs tracking-[0.3em] text-text-secondary font-mono">CHOOSE TABLE</span>
+        </header>
 
-          <div className="space-y-3 rounded-sm border border-border-default bg-surface/40 p-5">
-            <label className="block text-xs font-mono tracking-[0.2em] text-text-secondary">HANDLE</label>
+        {/* ハンドル入力 */}
+        <div className="flex gap-2 items-end">
+          <div className="flex-1 space-y-1.5">
+            <label className="block text-xs font-mono tracking-[0.2em] text-text-secondary">YOUR HANDLE</label>
             <input
               value={handle}
               onChange={e => setHandle(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && connect()}
-              placeholder="your callsign in Sector 23"
-              disabled={pagePhase === 'connecting'}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && selectedTable && handle.trim()) connect(selectedTable);
+              }}
+              placeholder="callsign in Sector 23"
+              disabled={isConnecting}
               maxLength={12}
-              className="w-full px-3 py-2 bg-surface border border-border-default rounded-sm text-foreground font-mono"
+              className="w-full px-3 py-2.5 bg-surface border border-border-default rounded-sm text-foreground font-mono text-sm focus:border-neon-pink focus:outline-none"
             />
-            <button
-              onClick={connect}
-              disabled={pagePhase === 'connecting' || !handle.trim()}
-              className="w-full h-12 bg-neon-pink text-background rounded-sm font-bold tracking-[0.2em] uppercase neon-glow-pink disabled:opacity-40"
-            >
-              {pagePhase === 'connecting' ? 'CONNECTING…' : 'ENTER SECTOR 23'}
-            </button>
-            {error && <p className="text-xs text-crimson font-mono">{error}</p>}
           </div>
-
-          <p className="text-center text-[10px] text-text-secondary font-mono opacity-50">
-            Fan-made · Non-official · FUTURE Guild project
-          </p>
         </div>
+
+        {/* テーブルカード */}
+        <div className="space-y-3">
+          <p className="text-xs font-mono tracking-[0.3em] text-text-secondary">SELECT TABLE</p>
+          <div className="grid gap-3">
+            {TABLES.map(table => {
+              const info = tableCounts[table.id];
+              const count = info?.playerCount ?? 0;
+              const phase = info?.phase ?? 'lobby';
+              const isSel = selectedTable === table.id;
+              const inGame = phase === 'in_hand' || phase === 'between_hand';
+              return (
+                <button
+                  key={table.id}
+                  onClick={() => !isConnecting && setSelectedTable(table.id)}
+                  disabled={isConnecting}
+                  className={`w-full text-left rounded-sm border p-4 transition-all ${
+                    isSel
+                      ? 'border-neon-pink bg-neon-pink/10'
+                      : 'border-border-default bg-surface/40 hover:border-neon-blue/60 hover:bg-surface/60'
+                  } disabled:cursor-not-allowed`}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-display font-bold tracking-wider text-sm text-foreground">
+                          {table.name}
+                        </span>
+                        <span className="text-[9px] tracking-[0.25em] font-mono text-text-secondary border border-border-default px-1.5 py-0.5">
+                          {table.label}
+                        </span>
+                      </div>
+                      <p className="text-xs text-text-secondary font-mono">{table.desc}</p>
+                    </div>
+                    <div className="text-right shrink-0 space-y-1">
+                      <div className="text-xs font-mono text-cyber-gold">{table.blinds}</div>
+                      <div className={`text-[10px] font-mono flex items-center gap-1 justify-end ${
+                        count > 0 ? 'text-acid-green' : 'text-text-secondary'
+                      }`}>
+                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                          inGame ? 'bg-neon-pink animate-pulse' : count > 0 ? 'bg-acid-green' : 'bg-border-default'
+                        }`} />
+                        {count} {count === 1 ? 'player' : 'players'}
+                        {inGame && <span className="text-neon-pink ml-1">IN GAME</span>}
+                      </div>
+                    </div>
+                  </div>
+                  {isSel && (
+                    <div className="mt-3 pt-3 border-t border-neon-pink/30">
+                      <button
+                        onClick={e => { e.stopPropagation(); if (handle.trim()) connect(table.id); }}
+                        disabled={isConnecting || !handle.trim()}
+                        className="w-full h-10 bg-neon-pink text-background rounded-sm font-bold tracking-[0.2em] text-sm uppercase neon-glow-pink disabled:opacity-40 transition-opacity"
+                      >
+                        {isConnecting ? 'CONNECTING…' : `JOIN ${table.name}`}
+                      </button>
+                      {!handle.trim() && (
+                        <p className="text-[10px] text-text-secondary font-mono text-center mt-2">
+                          ↑ ハンドルを入力してください
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {error && <p className="text-xs text-crimson font-mono text-center">{error}</p>}
+
+        <p className="text-center text-[10px] text-text-secondary font-mono opacity-50 mt-auto">
+          Fan-made · Non-official · FUTURE Guild project
+        </p>
       </div>
     );
   }

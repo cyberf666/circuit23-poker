@@ -104,12 +104,28 @@ export default class Circuit23Server implements Party.Server {
 
   constructor(readonly room: Party.Room) {}
 
-  // ━━ HTTP ヘルスチェック ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // ━━ HTTP — テーブル状態確認（ブラウザからの CORS 対応）━━
   async onRequest(req: Party.Request): Promise<Response> {
-    if (req.method === 'GET') {
-      return Response.json({ ok: true, server: 'circuit23', room: this.room.id, ts: Date.now() });
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    };
+    if (req.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
-    return new Response('Method Not Allowed', { status: 405 });
+    if (req.method === 'GET') {
+      return Response.json(
+        {
+          ok: true,
+          room: this.room.id,
+          playerCount: this.playerInfo.size,
+          phase: this.phase,
+          ts: Date.now(),
+        },
+        { headers: { ...corsHeaders, 'content-type': 'application/json' } },
+      );
+    }
+    return new Response('Method Not Allowed', { status: 405, headers: corsHeaders });
   }
 
   // ━━ ライフサイクル ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
