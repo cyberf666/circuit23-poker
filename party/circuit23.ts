@@ -51,6 +51,7 @@ interface PlayerInfo {
   isReady: boolean;
   labels: string[];
   isConnected: boolean;
+  isSittingOut: boolean;
 }
 
 type RoomPhase = 'lobby' | 'in_hand' | 'between_hand';
@@ -87,6 +88,7 @@ export interface PublicState {
   game: PublicGame | null;
   message: string;
   hostId: string | null;
+  spectatorCount: number;
 }
 
 // ── サーバー実装 ────────────────────────────────────
@@ -103,6 +105,7 @@ export default class Circuit23Server implements Party.Server {
   private playerInfo = new Map<string, PlayerInfo>();
   private hostId: string | null = null;
   private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private spectators = new Set<string>();
 
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
   private turnPlayerId: string | null = null;
@@ -195,10 +198,12 @@ export default class Circuit23Server implements Party.Server {
     }
 
     // ── 新規参加 ──────────────────────────────────────
-    // 満席チェック
+    // 満席チェック — 満席なら観戦者として登録
     const connectedCount = Array.from(this.playerInfo.values()).filter(p => p.isConnected).length;
     if (connectedCount >= TABLE_CONFIG.maxSeats) {
-      conn.send(JSON.stringify({ type: 'error', code: 'ROOM_FULL', message: `Table is full (${TABLE_CONFIG.maxSeats}/${TABLE_CONFIG.maxSeats})` }));
+      this.spectators.add(conn.id);
+      conn.send(JSON.stringify({ type: 'spectator_joined' }));
+      conn.send(JSON.stringify(this.buildPublicState()));
       return;
     }
 
@@ -211,6 +216,7 @@ export default class Circuit23Server implements Party.Server {
       isReady: false,
       labels,
       isConnected: true,
+      isSittingOut: false,
     });
 
     // 最初の参加者がホスト
@@ -222,6 +228,12 @@ export default class Circuit23Server implements Party.Server {
   }
 
   onClose(conn: Party.Connection) {
+    // 観戦者なら即削除
+    if (this.spectators.has(conn.id)) {
+      this.spectators.delete(conn.id);
+      return;
+    }
+
     const pi = this.playerInfo.get(conn.id);
     if (!pi) return;
 
@@ -320,6 +332,9 @@ export default class Circuit23Server implements Party.Server {
       case 'rebuy':
         this.handleRebuy(sender);
         break;
+      case 'sit_out':
+        this.handleSitOut(sender, !!msg.sitOut);
+        break;
       case 'action':
         this.handleAction(sender, msg.action as ActionType, msg.amount as number | undefined);
         break;
@@ -361,13 +376,25 @@ export default class Circuit23Server implements Party.Server {
     this.broadcastState();
   }
 
+  private handleSitOut(conn: Party.Connection, sitOut: boolean) {
+    const pi = this.playerInfo.get(conn.id);
+    if (!pi) return;
+    if (this.phase === 'in_hand') {
+      conn.send(JSON.stringify({ type: 'error', code: 'SIT_OUT_NOT_NOW', message: 'ハンド中はシットアウトできません' }));
+      return;
+    }
+    pi.isSittingOut = sitOut;
+    this.message = sitOut ? `${pi.handle} is sitting out` : `${pi.handle} is back`;
+    this.broadcastState();
+  }
+
   private handleStart(conn: Party.Connection) {
     if (conn.id !== this.hostId) {
       conn.send(JSON.stringify({ type: 'error', code: 'NOT_HOST' }));
       return;
     }
     if (this.phase !== 'lobby') return;
-    const eligible = Array.from(this.playerInfo.values()).filter(p => p.stack > 0 && p.isConnected);
+    const eligible = Array.from(this.playerInfo.values()).filter(p => p.stack > 0 && p.isConnected && !p.isSittingOut);
     if (eligible.length < 2) {
       conn.send(JSON.stringify({ type: 'error', code: 'NOT_ENOUGH_PLAYERS', message: 'Need at least 2 connected players' }));
       return;
@@ -377,7 +404,7 @@ export default class Circuit23Server implements Party.Server {
   }
 
   private startHand() {
-    const readyPlayers = Array.from(this.playerInfo.values()).filter(p => p.isReady && p.stack > 0);
+    const readyPlayers = Array.from(this.playerInfo.values()).filter(p => p.isReady && p.stack > 0 && !p.isSittingOut);
     if (readyPlayers.length < 2) {
       this.message = 'Need at least 2 ready players with chips';
       this.broadcastState();
@@ -747,7 +774,7 @@ export default class Circuit23Server implements Party.Server {
       };
     }
 
-    return { type: 'state', phase: this.phase, players, game, message: this.message, hostId: this.hostId };
+    return { type: 'state', phase: this.phase, players, game, message: this.message, hostId: this.hostId, spectatorCount: this.spectators.size };
   }
 
   // ━━ ヘルパー ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
