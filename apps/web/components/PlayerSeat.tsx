@@ -24,6 +24,8 @@ interface Props {
   isLoser?: boolean;
   /** チャット吹き出しテキスト（親が期限管理する） */
   chatBubble?: string;
+  /** 切断中（再接続待ち） */
+  isDisconnected?: boolean;
 }
 
 const LABEL_COLOR: Record<string, string> = {
@@ -98,6 +100,7 @@ export function PlayerSeat({
   isLoser,
   netDelta,
   chatBubble,
+  isDisconnected,
 }: Props) {
   const isFolded = player.status === 'folded';
   const isAllIn = player.status === 'allin';
@@ -235,8 +238,23 @@ export function PlayerSeat({
           </div>
         )}
 
+        {/* 切断中インジケーター */}
+        {isDisconnected && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/70 backdrop-blur-sm z-20">
+            <span className="text-[10px] tracking-[0.25em] text-text-secondary font-mono animate-pulse">
+              OFFLINE
+            </span>
+            <div className="mt-1 flex gap-0.5">
+              {[0,1,2].map(i => (
+                <span key={i} className="w-1 h-1 rounded-full bg-text-secondary/50 animate-pulse"
+                  style={{ animationDelay: `${i * 200}ms` }} />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Thinking indicator */}
-        {isThinking && (
+        {isThinking && !isDisconnected && (
           <div className="absolute inset-0 flex items-center justify-center bg-background/40 backdrop-blur-sm">
             <span className="text-xs tracking-[0.2em] text-neon-blue font-mono animate-pulse">
               ...

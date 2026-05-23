@@ -22,6 +22,7 @@ interface PlayerInfo {
   stack: number;
   isReady: boolean;
   labels: string[];
+  isConnected: boolean;
 }
 
 interface PublicPlayerGame {
@@ -298,9 +299,26 @@ export default function OnlinePage() {
   const [chat, setChat] = useState<{ from: string; text: string; self?: boolean }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatBubbles, setChatBubbles] = useState<Record<string, string>>({});
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const chatBubbleTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pagePhaseRef = useRef<PagePhase>('table_select');
   const socketRef = useRef<PartySocket | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  // ゲーム状態リセット
+  const resetGameState = useCallback(() => {
+    setGame(null);
+    setHoleCards(null);
+    setIsReady(false);
+    setHostId(null);
+    setTurnTimer(null);
+    setShowdown(null);
+    setHandEnd(null);
+    setSelectedTable(null);
+    setChatBubbles({});
+    setChat([]);
+  }, []);
 
   // ── テーブル情報ポーリング ─────────────────────────
 
@@ -335,6 +353,11 @@ export default function OnlinePage() {
     // 接続成功時に自分の ID を保存
     socket.addEventListener('open', () => {
       setMyId(socket.id);
+      setIsReconnecting(false);
+      if (reconnectTimeout.current) {
+        clearTimeout(reconnectTimeout.current);
+        reconnectTimeout.current = null;
+      }
     });
 
     socket.addEventListener('message', (evt: MessageEvent) => {
@@ -399,18 +422,22 @@ export default function OnlinePage() {
     });
 
     socket.addEventListener('close', () => {
-      socketRef.current = null;
-      setPagePhase('table_select');
-      setGame(null);
-      setHoleCards(null);
-      setIsReady(false);
-      setHostId(null);
-      setTurnTimer(null);
-      setShowdown(null);
-      setHandEnd(null);
-      setSelectedTable(null);
-      setChatBubbles({});
-      setChat([]);
+      // ゲーム中・ロビー中の場合は即リセットせず再接続を試みる
+      const inGame = pagePhaseRef.current !== 'table_select' && pagePhaseRef.current !== 'connecting';
+      if (inGame) {
+        setIsReconnecting(true);
+        // 25秒間待ってから諦めてテーブル選択に戻る
+        reconnectTimeout.current = setTimeout(() => {
+          socketRef.current = null;
+          setIsReconnecting(false);
+          setPagePhase('table_select');
+          resetGameState();
+        }, 25_000);
+      } else {
+        socketRef.current = null;
+        setPagePhase('table_select');
+        resetGameState();
+      }
     });
 
     socket.addEventListener('error', () => {
@@ -420,10 +447,12 @@ export default function OnlinePage() {
   };
 
   const disconnect = () => {
+    if (reconnectTimeout.current) { clearTimeout(reconnectTimeout.current); reconnectTimeout.current = null; }
     socketRef.current?.close();
     socketRef.current = null;
+    setIsReconnecting(false);
     setPagePhase('table_select');
-    setSelectedTable(null);
+    resetGameState();
   };
 
   // toggleReady は将来のREADY表示用に残す（現在はホストSTARTに統合）
@@ -448,12 +477,18 @@ export default function OnlinePage() {
     sendStart(socket);
   };
 
+  // pagePhase を ref にも同期（close ハンドラから参照するため）
+  useEffect(() => { pagePhaseRef.current = pagePhase; }, [pagePhase]);
+
   // チャット自動スクロール
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat]);
 
-  useEffect(() => () => { socketRef.current?.close(); }, []);
+  useEffect(() => () => {
+    if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
+    socketRef.current?.close();
+  }, []);
 
   // ── 自分の状態 ────────────────────────────────────
 
@@ -710,6 +745,26 @@ export default function OnlinePage() {
           </div>
         )}
 
+        {/* 自分が切断中 — RECONNECTING オーバーレイ */}
+        {isReconnecting && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-md">
+            <div className="flex flex-col items-center gap-3 text-center">
+              <div className="flex gap-1.5">
+                {[0,1,2,3].map(i => (
+                  <span key={i} className="w-2 h-2 rounded-full bg-neon-pink animate-pulse"
+                    style={{ animationDelay: `${i * 150}ms` }} />
+                ))}
+              </div>
+              <p className="text-sm font-mono tracking-[0.3em] text-neon-pink">RECONNECTING…</p>
+              <p className="text-[10px] font-mono text-text-secondary">25秒後に接続できない場合はテーブル選択に戻ります</p>
+              <button onClick={disconnect}
+                className="mt-2 text-xs font-mono text-text-secondary hover:text-crimson transition-colors underline underline-offset-2">
+                キャンセルして退出
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* 相手席 */}
         <div className="flex justify-around items-start gap-4 sm:gap-8 lg:gap-16 relative z-10">
           {othersPlayers.map(p => (
@@ -723,6 +778,7 @@ export default function OnlinePage() {
                 isWinner={isHandEnd && winnerSet.has(p.id)}
                 isLoser={isHandEnd && showdownBestHand.has(p.id) && !winnerSet.has(p.id)}
                 chatBubble={chatBubbles[p.handle]}
+                isDisconnected={players.find(pl => pl.id === p.id)?.isConnected === false}
               />
               <TurnTimerBar timer={turnTimer} playerId={p.id} />
             </div>

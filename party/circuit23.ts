@@ -39,6 +39,7 @@ const TABLE_CONFIG: TableConfig = {
 const INITIAL_STACK = 1000;
 const TURN_TIMEOUT_MS = 30_000;
 const NEXT_HAND_DELAY_MS = 5_000;
+const DISCONNECT_GRACE_MS = 20_000; // 再接続猶予 20 秒
 
 // ── 内部型定義 ──────────────────────────────────────
 
@@ -49,6 +50,7 @@ interface PlayerInfo {
   stack: number;
   isReady: boolean;
   labels: string[];
+  isConnected: boolean;
 }
 
 type RoomPhase = 'lobby' | 'in_hand' | 'between_hand';
@@ -100,6 +102,7 @@ export default class Circuit23Server implements Party.Server {
 
   private playerInfo = new Map<string, PlayerInfo>();
   private hostId: string | null = null;
+  private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
   private turnPlayerId: string | null = null;
@@ -120,7 +123,7 @@ export default class Circuit23Server implements Party.Server {
         {
           ok: true,
           room: this.room.id,
-          playerCount: this.playerInfo.size,
+          playerCount: Array.from(this.playerInfo.values()).filter(p => p.isConnected).length,
           phase: this.phase,
           ts: Date.now(),
         },
@@ -140,6 +143,56 @@ export default class Circuit23Server implements Party.Server {
         .trim() || `guest-${conn.id.slice(0, 4)}`;
     const labels = (url.searchParams.get('labels') ?? 'GUEST').split(',').filter(Boolean);
 
+    // ── 再接続チェック ─────────────────────────────────
+    const ghost = Array.from(this.playerInfo.values())
+      .find(p => p.handle === handle && !p.isConnected);
+
+    if (ghost) {
+      // 猶予タイマーをキャンセル
+      const t = this.disconnectTimers.get(ghost.id);
+      if (t) { clearTimeout(t); this.disconnectTimers.delete(ghost.id); }
+
+      const oldId = ghost.id;
+
+      // playerInfo の ID を新しい接続 ID に付け替え
+      this.playerInfo.delete(oldId);
+      ghost.id = conn.id;
+      ghost.isConnected = true;
+      this.playerInfo.set(conn.id, ghost);
+
+      // hostId を更新
+      if (this.hostId === oldId) this.hostId = conn.id;
+
+      // turnPlayerId を更新
+      if (this.turnPlayerId === oldId) this.turnPlayerId = conn.id;
+
+      // tableState の players キーを更新
+      if (this.tableState) {
+        const oldGp = this.tableState.players[oldId];
+        if (oldGp) {
+          const newPlayers = { ...this.tableState.players };
+          delete newPlayers[oldId];
+          newPlayers[conn.id] = { ...oldGp, id: conn.id };
+          this.tableState = { ...this.tableState, players: newPlayers };
+        }
+      }
+
+      this.message = `${handle} reconnected!`;
+      conn.send(JSON.stringify(this.buildPublicState()));
+
+      // ホールカードを再送
+      if (this.tableState && this.phase === 'in_hand') {
+        const gp = this.tableState.players[conn.id];
+        if (gp?.holeCards?.length) {
+          conn.send(JSON.stringify({ type: 'hole_cards', cards: gp.holeCards, handNumber: this.tableState.handNumber }));
+        }
+      }
+
+      this.broadcastState();
+      return;
+    }
+
+    // ── 新規参加 ──────────────────────────────────────
     const seat = this.findFreeSeat();
     this.playerInfo.set(conn.id, {
       id: conn.id,
@@ -148,17 +201,14 @@ export default class Circuit23Server implements Party.Server {
       stack: INITIAL_STACK,
       isReady: false,
       labels,
+      isConnected: true,
     });
 
     // 最初の参加者がホスト
     if (!this.hostId) this.hostId = conn.id;
 
     this.message = `${handle} entered Sector 23`;
-
-    // 現在の状態を新規参加者に送信
     conn.send(JSON.stringify(this.buildPublicState()));
-
-    // 全員にブロードキャスト
     this.broadcastState();
   }
 
@@ -166,28 +216,78 @@ export default class Circuit23Server implements Party.Server {
     const pi = this.playerInfo.get(conn.id);
     if (!pi) return;
 
-    // ハンド中かつそのプレイヤーのターンなら auto-fold
-    if (this.tableState && this.phase === 'in_hand') {
+    // ロビーなら即退場
+    if (this.phase === 'lobby') {
+      this.removePlayer(conn.id, 'left');
+      return;
+    }
+
+    // ゲーム中は切断状態にして猶予を与える
+    pi.isConnected = false;
+    this.message = `${pi.handle} disconnected — reconnecting?`;
+    this.broadcastState();
+
+    // 自分のターンなら即 auto-fold
+    if (this.tableState) {
       const gp = this.tableState.players[conn.id];
       if (gp?.status === 'active' && gp.isTurn) {
-        this.autoFold(conn.id);
-        this.playerInfo.delete(conn.id);
-        this.broadcastState();
-        return;
+        this.clearTurnTimer();
+        this.room.broadcast(JSON.stringify({
+          type: 'chat', from: 'CIRCUIT-23',
+          text: `${pi.handle} disconnected — auto-fold`, at: Date.now(),
+        }));
+        setTimeout(() => this.autoFold(conn.id), 1000);
       }
     }
 
-    this.playerInfo.delete(conn.id);
+    // 猶予タイマー
+    const timer = setTimeout(() => {
+      this.disconnectTimers.delete(conn.id);
+      const p = this.playerInfo.get(conn.id);
+      if (!p || p.isConnected) return; // 既に再接続済み
+      this.room.broadcast(JSON.stringify({
+        type: 'chat', from: 'CIRCUIT-23',
+        text: `${p.handle} timed out and left`, at: Date.now(),
+      }));
+      this.removePlayer(conn.id, 'timed out');
+    }, DISCONNECT_GRACE_MS);
 
-    // ホストが抜けたら次のプレイヤーに引き継ぎ
-    if (this.hostId === conn.id) {
-      this.hostId = this.playerInfo.keys().next().value ?? null;
+    this.disconnectTimers.set(conn.id, timer);
+  }
+
+  private removePlayer(id: string, reason: string) {
+    const pi = this.playerInfo.get(id);
+    if (!pi) return;
+
+    // ゲーム中なら fold 処理
+    if (this.tableState && this.phase === 'in_hand') {
+      const gp = this.tableState.players[id];
+      if (gp && (gp.status === 'active' || gp.status === 'allin') && !gp.isTurn) {
+        // 次のターンに auto-fold されるので gameState はそのまま
+      }
+    }
+
+    this.playerInfo.delete(id);
+
+    // ホスト引き継ぎ（接続中のプレイヤー優先）
+    if (this.hostId === id) {
+      this.hostId = Array.from(this.playerInfo.values())
+        .find(p => p.isConnected)?.id ?? null;
       if (this.hostId) {
-        const newHost = this.playerInfo.get(this.hostId);
-        this.message = `${newHost?.handle ?? '?'} is now the host`;
+        this.message = `${this.playerInfo.get(this.hostId)?.handle ?? '?'} is now the host`;
       }
     } else {
-      this.message = `${pi.handle} left`;
+      this.message = `${pi.handle} ${reason}`;
+    }
+
+    // 残り 1 人でゲーム中ならハンド終了
+    if (this.phase === 'in_hand' && this.tableState) {
+      const remaining = Object.values(this.tableState.players)
+        .filter(p => p.status !== 'folded' && this.playerInfo.has(p.id));
+      if (remaining.length <= 1) {
+        this.endHand();
+        return;
+      }
     }
 
     this.broadcastState();
@@ -239,9 +339,9 @@ export default class Circuit23Server implements Party.Server {
       return;
     }
     if (this.phase !== 'lobby') return;
-    const eligible = Array.from(this.playerInfo.values()).filter(p => p.stack > 0);
+    const eligible = Array.from(this.playerInfo.values()).filter(p => p.stack > 0 && p.isConnected);
     if (eligible.length < 2) {
-      conn.send(JSON.stringify({ type: 'error', code: 'NOT_ENOUGH_PLAYERS', message: 'Need at least 2 players' }));
+      conn.send(JSON.stringify({ type: 'error', code: 'NOT_ENOUGH_PLAYERS', message: 'Need at least 2 connected players' }));
       return;
     }
     eligible.forEach(p => { p.isReady = true; });
@@ -528,6 +628,18 @@ export default class Circuit23Server implements Party.Server {
 
     this.clearTurnTimer();
     this.turnPlayerId = active.id;
+
+    // 切断中プレイヤーのターンなら即 auto-fold
+    const pi = this.playerInfo.get(active.id);
+    if (!pi || !pi.isConnected) {
+      this.room.broadcast(JSON.stringify({
+        type: 'chat', from: 'CIRCUIT-23',
+        text: `${pi?.handle ?? '?'} is offline — auto-fold`, at: Date.now(),
+      }));
+      setTimeout(() => this.autoFold(active.id), 1200);
+      return;
+    }
+
     const deadline = Date.now() + TURN_TIMEOUT_MS;
 
     this.room.broadcast(
