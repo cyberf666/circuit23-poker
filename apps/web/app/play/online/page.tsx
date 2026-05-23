@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Link from 'next/link';
 import PartySocket from 'partysocket';
-import { joinCircuit23, sendAction, sendReady, sendChat as sendChatMsg } from '../../../lib/online/client';
+import { joinCircuit23, sendAction, sendStart, sendChat as sendChatMsg } from '../../../lib/online/client';
 import { CommunityCards } from '../../../components/CommunityCards';
 import { PlayerSeat } from '../../../components/PlayerSeat';
 import { PotDisplay, BettingInfo } from '../../../components/Chip';
@@ -53,6 +53,7 @@ interface PublicState {
   players: PlayerInfo[];
   game: PublicGame | null;
   message: string;
+  hostId: string | null;
 }
 
 interface HoleCards {
@@ -291,11 +292,15 @@ export default function OnlinePage() {
   const [showdown, setShowdown] = useState<ShowdownResult | null>(null);
   const [handEnd, setHandEnd] = useState<HandEndMsg | null>(null);
   const [isReady, setIsReady] = useState(false);
+  const [hostId, setHostId] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [turnTimer, setTurnTimer] = useState<TurnTimerMsg | null>(null);
   const [chat, setChat] = useState<{ from: string; text: string; self?: boolean }[]>([]);
   const [chatInput, setChatInput] = useState('');
+  const [chatBubbles, setChatBubbles] = useState<Record<string, string>>({});
+  const chatBubbleTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const socketRef = useRef<PartySocket | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   // ── テーブル情報ポーリング ─────────────────────────
 
@@ -345,6 +350,7 @@ export default function OnlinePage() {
           const s = msg as PublicState;
           setPlayers(s.players);
           setGame(s.game);
+          setHostId(s.hostId);
           const phase: PagePhase =
             s.phase === 'in_hand' ? 'in_hand'
             : s.phase === 'between_hand' ? 'between_hand'
@@ -373,7 +379,13 @@ export default function OnlinePage() {
           break;
         case 'chat': {
           const c = msg as { type: 'chat'; from: string; text: string };
-          setChat(prev => [...prev.slice(-49), { from: c.from, text: c.text, self: c.from === handle.trim() }]);
+          setChat(prev => [...prev.slice(-99), { from: c.from, text: c.text, self: c.from === handle.trim() }]);
+          // 吹き出し: ハンドル名をキーにして4秒表示
+          setChatBubbles(prev => ({ ...prev, [c.from]: c.text }));
+          if (chatBubbleTimers.current[c.from]) clearTimeout(chatBubbleTimers.current[c.from]);
+          chatBubbleTimers.current[c.from] = setTimeout(() => {
+            setChatBubbles(prev => { const next = { ...prev }; delete next[c.from]; return next; });
+          }, 4000);
           break;
         }
         case 'error': {
@@ -392,10 +404,13 @@ export default function OnlinePage() {
       setGame(null);
       setHoleCards(null);
       setIsReady(false);
+      setHostId(null);
       setTurnTimer(null);
       setShowdown(null);
       setHandEnd(null);
       setSelectedTable(null);
+      setChatBubbles({});
+      setChat([]);
     });
 
     socket.addEventListener('error', () => {
@@ -411,13 +426,8 @@ export default function OnlinePage() {
     setSelectedTable(null);
   };
 
-  const toggleReady = () => {
-    const socket = socketRef.current;
-    if (!socket) return;
-    const next = !isReady;
-    setIsReady(next);
-    sendReady(socket, next);
-  };
+  // toggleReady は将来のREADY表示用に残す（現在はホストSTARTに統合）
+  const toggleReady = () => { void isReady; };
 
   const doAction = useCallback((type: ActionType, amount?: number) => {
     const socket = socketRef.current;
@@ -431,6 +441,17 @@ export default function OnlinePage() {
     sendChatMsg(socket, chatInput);
     setChatInput('');
   };
+
+  const doSendStart = () => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    sendStart(socket);
+  };
+
+  // チャット自動スクロール
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chat]);
 
   useEffect(() => () => { socketRef.current?.close(); }, []);
 
@@ -589,8 +610,10 @@ export default function OnlinePage() {
                   {p.handle}
                   {p.id === myId && <span className="text-[10px] text-text-secondary ml-1">(YOU)</span>}
                 </span>
+                {p.id === hostId && (
+                  <span className="text-[9px] tracking-widest text-cyber-gold border border-cyber-gold/50 px-1 rounded-sm">HOST</span>
+                )}
                 <span className="ml-auto text-cyber-gold">◉{p.stack}</span>
-                {p.isReady && <span className="text-[10px] tracking-widest text-acid-green">RDY</span>}
               </li>
             ))}
             {players.length === 0 && (
@@ -598,17 +621,25 @@ export default function OnlinePage() {
             )}
           </ul>
 
-          <button onClick={toggleReady}
-            className={`w-full h-11 rounded-sm text-sm font-bold tracking-[0.2em] uppercase transition-colors ${
-              isReady ? 'bg-acid-green text-background' : 'border border-acid-green text-acid-green hover:bg-acid-green/10'
-            }`}>
-            {isReady ? '✓ READY' : 'READY UP'}
-          </button>
-
-          <p className="text-xs text-text-secondary font-mono text-center">
-            {players.filter(p => p.isReady).length} / {players.length} ready
-            {players.filter(p => p.isReady).length < 2 && ' — 2人以上READYでスタート'}
-          </p>
+          {myId === hostId ? (
+            <div className="space-y-2">
+              <button
+                onClick={doSendStart}
+                disabled={players.length < 2}
+                className="w-full h-11 rounded-sm text-sm font-bold tracking-[0.2em] uppercase transition-colors bg-neon-pink text-background neon-glow-pink disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {players.length < 2 ? 'Waiting for players…' : '▶ START GAME'}
+              </button>
+              {players.length < 2 && (
+                <p className="text-xs text-text-secondary font-mono text-center">あと{2 - players.length}人必要</p>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center justify-center gap-2 h-11 rounded-sm border border-border-default text-sm font-mono text-text-secondary">
+              <span className="animate-pulse">●</span>
+              <span>{players.find(p => p.id === hostId)?.handle ?? 'ホスト'} がスタートするまで待機中…</span>
+            </div>
+          )}
         </section>
 
         <section className="rounded-sm border border-border-default bg-surface/40 p-4 space-y-3">
@@ -691,6 +722,7 @@ export default function OnlinePage() {
                 bestHandName={isHandEnd ? showdownBestHand.get(p.id) : undefined}
                 isWinner={isHandEnd && winnerSet.has(p.id)}
                 isLoser={isHandEnd && showdownBestHand.has(p.id) && !winnerSet.has(p.id)}
+                chatBubble={chatBubbles[p.handle]}
               />
               <TurnTimerBar timer={turnTimer} playerId={p.id} />
             </div>
@@ -745,6 +777,7 @@ export default function OnlinePage() {
                 bestHandName={isHandEnd ? showdownBestHand.get(myId) : undefined}
                 isWinner={isHandEnd && winnerSet.has(myId)}
                 isLoser={isHandEnd && showdownBestHand.has(myId) && !winnerSet.has(myId)}
+                chatBubble={me ? chatBubbles[me.handle] : undefined}
               />
               <TurnTimerBar timer={turnTimer} playerId={myId} />
             </div>
@@ -770,22 +803,35 @@ export default function OnlinePage() {
         )}
       </footer>
 
-      <div className="border-t border-border-default bg-surface/30 px-4 py-2">
-        <div className="flex gap-2 max-w-2xl mx-auto">
-          <input value={chatInput} onChange={e => setChatInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && doSendChat()} placeholder="chat…"
-            className="flex-1 px-3 py-1.5 bg-surface border border-border-default rounded-sm text-foreground font-mono text-xs" />
-          <button onClick={doSendChat}
-            className="px-3 h-8 border border-border-default text-text-secondary rounded-sm text-xs hover:border-neon-blue hover:text-neon-blue">
-            Send
-          </button>
-        </div>
-        {chat.slice(-3).map((c, i) => (
-          <div key={i} className="flex gap-2 text-[10px] font-mono mt-0.5 max-w-2xl mx-auto">
-            <span className={c.self ? 'text-neon-pink' : 'text-neon-blue'}>{c.from}:</span>
-            <span className="text-text-secondary">{c.text}</span>
+      {/* チャットパネル */}
+      <div className="border-t border-border-default bg-surface/30 px-4 pt-2 pb-3">
+        <div className="max-w-2xl mx-auto space-y-2">
+          {/* 履歴 */}
+          <div className="h-24 overflow-y-auto space-y-0.5 scrollbar-thin pr-1">
+            {chat.length === 0
+              ? <p className="text-[10px] text-text-secondary font-mono italic">No messages yet…</p>
+              : chat.map((c, i) => (
+                  <div key={i} className={`flex gap-1.5 text-[11px] font-mono ${c.self ? 'flex-row-reverse' : ''}`}>
+                    <span className={`shrink-0 font-bold ${c.self ? 'text-neon-pink' : 'text-neon-blue'}`}>{c.from}</span>
+                    <span className={`px-1.5 py-0.5 rounded-sm text-foreground/80 ${
+                      c.self ? 'bg-neon-pink/10 border border-neon-pink/20' : 'bg-surface border border-border-default'
+                    }`}>{c.text}</span>
+                  </div>
+                ))
+            }
+            <div ref={chatEndRef} />
           </div>
-        ))}
+          {/* 入力欄 */}
+          <div className="flex gap-2">
+            <input value={chatInput} onChange={e => setChatInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && doSendChat()} placeholder="message…"
+              className="flex-1 px-3 py-1.5 bg-surface border border-border-default rounded-sm text-foreground font-mono text-xs focus:border-neon-pink focus:outline-none" />
+            <button onClick={doSendChat}
+              className="px-4 h-8 border border-border-default text-text-secondary rounded-sm text-xs hover:border-neon-pink hover:text-neon-pink transition-colors">
+              Send
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

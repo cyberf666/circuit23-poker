@@ -84,6 +84,7 @@ export interface PublicState {
   players: PlayerInfo[];
   game: PublicGame | null;
   message: string;
+  hostId: string | null;
 }
 
 // ── サーバー実装 ────────────────────────────────────
@@ -98,6 +99,7 @@ export default class Circuit23Server implements Party.Server {
   private dealerSeat: Seat = 0 as Seat;
 
   private playerInfo = new Map<string, PlayerInfo>();
+  private hostId: string | null = null;
 
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
   private turnPlayerId: string | null = null;
@@ -148,6 +150,9 @@ export default class Circuit23Server implements Party.Server {
       labels,
     });
 
+    // 最初の参加者がホスト
+    if (!this.hostId) this.hostId = conn.id;
+
     this.message = `${handle} entered Sector 23`;
 
     // 現在の状態を新規参加者に送信
@@ -173,7 +178,18 @@ export default class Circuit23Server implements Party.Server {
     }
 
     this.playerInfo.delete(conn.id);
-    this.message = `${pi.handle} left`;
+
+    // ホストが抜けたら次のプレイヤーに引き継ぎ
+    if (this.hostId === conn.id) {
+      this.hostId = this.playerInfo.keys().next().value ?? null;
+      if (this.hostId) {
+        const newHost = this.playerInfo.get(this.hostId);
+        this.message = `${newHost?.handle ?? '?'} is now the host`;
+      }
+    } else {
+      this.message = `${pi.handle} left`;
+    }
+
     this.broadcastState();
   }
 
@@ -188,6 +204,9 @@ export default class Circuit23Server implements Party.Server {
     switch (msg.type) {
       case 'ready':
         this.handleReady(sender, !!msg.ready);
+        break;
+      case 'start':
+        this.handleStart(sender);
         break;
       case 'action':
         this.handleAction(sender, msg.action as ActionType, msg.amount as number | undefined);
@@ -211,13 +230,22 @@ export default class Circuit23Server implements Party.Server {
     if (!pi) return;
     pi.isReady = ready;
     this.broadcastState();
+    // 自動スタートは廃止。ホストが START を押すまで待機。
+  }
 
-    if (this.phase === 'lobby') {
-      const readyCount = Array.from(this.playerInfo.values()).filter(p => p.isReady).length;
-      if (readyCount >= 2) {
-        this.startHand();
-      }
+  private handleStart(conn: Party.Connection) {
+    if (conn.id !== this.hostId) {
+      conn.send(JSON.stringify({ type: 'error', code: 'NOT_HOST' }));
+      return;
     }
+    if (this.phase !== 'lobby') return;
+    const eligible = Array.from(this.playerInfo.values()).filter(p => p.stack > 0);
+    if (eligible.length < 2) {
+      conn.send(JSON.stringify({ type: 'error', code: 'NOT_ENOUGH_PLAYERS', message: 'Need at least 2 players' }));
+      return;
+    }
+    eligible.forEach(p => { p.isReady = true; });
+    this.startHand();
   }
 
   private startHand() {
@@ -482,14 +510,11 @@ export default class Circuit23Server implements Party.Server {
     setTimeout(() => {
       if (this.phase !== 'between_hand') return; // 割り込み対策
       this.dealerSeat = this.nextDealerSeat();
-      const eligible = Array.from(this.playerInfo.values()).filter(p => p.isReady && p.stack > 0);
-      if (eligible.length >= 2) {
-        this.startHand();
-      } else {
-        this.phase = 'lobby';
-        this.message = 'Waiting for players…';
-        this.broadcastState();
-      }
+      // ハンド間はロビーに戻りホストのスタート待ち
+      this.phase = 'lobby';
+      this.playerInfo.forEach(p => { p.isReady = false; });
+      this.message = 'Hand ended — host can start next hand';
+      this.broadcastState();
     }, NEXT_HAND_DELAY_MS);
   }
 
@@ -582,7 +607,7 @@ export default class Circuit23Server implements Party.Server {
       };
     }
 
-    return { type: 'state', phase: this.phase, players, game, message: this.message };
+    return { type: 'state', phase: this.phase, players, game, message: this.message, hostId: this.hostId };
   }
 
   // ━━ ヘルパー ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

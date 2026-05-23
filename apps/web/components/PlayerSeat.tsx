@@ -22,6 +22,8 @@ interface Props {
   netDelta?: number;
   /** ショーダウン参加かつ非勝者、または fold したが投資あり */
   isLoser?: boolean;
+  /** チャット吹き出しテキスト（親が期限管理する） */
+  chatBubble?: string;
 }
 
 const LABEL_COLOR: Record<string, string> = {
@@ -95,6 +97,7 @@ export function PlayerSeat({
   wonAmount,
   isLoser,
   netDelta,
+  chatBubble,
 }: Props) {
   const isFolded = player.status === 'folded';
   const isAllIn = player.status === 'allin';
@@ -114,6 +117,18 @@ export function PlayerSeat({
         isLoser ? 'lose-fade' : ''
       }`}
     >
+      {/* チャット吹き出し */}
+      {chatBubble && (
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-[calc(100%+4px)] z-50 pointer-events-none animate-fade-in">
+          <div className="bg-surface-elevated/95 border border-neon-pink/50 rounded-sm px-2.5 py-1.5 text-xs font-mono text-foreground max-w-[160px] break-words shadow-lg">
+            {chatBubble}
+          </div>
+          <div className="flex justify-center -mt-px">
+            <div className="w-2.5 h-2.5 bg-surface-elevated/95 border-r border-b border-neon-pink/50 rotate-45 -mt-1.5" />
+          </div>
+        </div>
+      )}
+
       {/* WANTED風 FOLD スタンプ — fold した瞬間からハンド終了まで常時表示 */}
       {isFolded && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">

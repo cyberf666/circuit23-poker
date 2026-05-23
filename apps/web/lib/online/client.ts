@@ -64,6 +64,10 @@ export function sendReady(socket: PartySocket, ready: boolean): void {
   socket.send(JSON.stringify({ type: 'ready', ready }));
 }
 
+export function sendStart(socket: PartySocket): void {
+  socket.send(JSON.stringify({ type: 'start' }));
+}
+
 export function sendChat(socket: PartySocket, text: string): void {
   socket.send(JSON.stringify({ type: 'chat', text }));
 }
