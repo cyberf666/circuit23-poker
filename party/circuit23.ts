@@ -124,6 +124,8 @@ export default class Circuit23Server implements Party.Server {
           ok: true,
           room: this.room.id,
           playerCount: Array.from(this.playerInfo.values()).filter(p => p.isConnected).length,
+          maxSeats: TABLE_CONFIG.maxSeats,
+          isFull: Array.from(this.playerInfo.values()).filter(p => p.isConnected).length >= TABLE_CONFIG.maxSeats,
           phase: this.phase,
           ts: Date.now(),
         },
@@ -193,6 +195,13 @@ export default class Circuit23Server implements Party.Server {
     }
 
     // ── 新規参加 ──────────────────────────────────────
+    // 満席チェック
+    const connectedCount = Array.from(this.playerInfo.values()).filter(p => p.isConnected).length;
+    if (connectedCount >= TABLE_CONFIG.maxSeats) {
+      conn.send(JSON.stringify({ type: 'error', code: 'ROOM_FULL', message: `Table is full (${TABLE_CONFIG.maxSeats}/${TABLE_CONFIG.maxSeats})` }));
+      return;
+    }
+
     const seat = this.findFreeSeat();
     this.playerInfo.set(conn.id, {
       id: conn.id,
@@ -308,6 +317,9 @@ export default class Circuit23Server implements Party.Server {
       case 'start':
         this.handleStart(sender);
         break;
+      case 'rebuy':
+        this.handleRebuy(sender);
+        break;
       case 'action':
         this.handleAction(sender, msg.action as ActionType, msg.amount as number | undefined);
         break;
@@ -331,6 +343,22 @@ export default class Circuit23Server implements Party.Server {
     pi.isReady = ready;
     this.broadcastState();
     // 自動スタートは廃止。ホストが START を押すまで待機。
+  }
+
+  private handleRebuy(conn: Party.Connection) {
+    const pi = this.playerInfo.get(conn.id);
+    if (!pi) return;
+    if (this.phase !== 'lobby') {
+      conn.send(JSON.stringify({ type: 'error', code: 'REBUY_NOT_NOW', message: 'ハンド中はリバイできません' }));
+      return;
+    }
+    if (pi.stack > 0) {
+      conn.send(JSON.stringify({ type: 'error', code: 'REBUY_NOT_NEEDED', message: 'まだチップがあります' }));
+      return;
+    }
+    pi.stack = INITIAL_STACK;
+    this.message = `${pi.handle} rebought ◉${INITIAL_STACK}`;
+    this.broadcastState();
   }
 
   private handleStart(conn: Party.Connection) {

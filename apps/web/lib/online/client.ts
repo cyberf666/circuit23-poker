@@ -68,6 +68,10 @@ export function sendStart(socket: PartySocket): void {
   socket.send(JSON.stringify({ type: 'start' }));
 }
 
+export function sendRebuy(socket: PartySocket): void {
+  socket.send(JSON.stringify({ type: 'rebuy' }));
+}
+
 export function sendChat(socket: PartySocket, text: string): void {
   socket.send(JSON.stringify({ type: 'chat', text }));
 }

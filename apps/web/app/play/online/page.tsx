@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Link from 'next/link';
 import PartySocket from 'partysocket';
-import { joinCircuit23, sendAction, sendStart, sendChat as sendChatMsg } from '../../../lib/online/client';
+import { joinCircuit23, sendAction, sendStart, sendRebuy, sendChat as sendChatMsg } from '../../../lib/online/client';
 import { CommunityCards } from '../../../components/CommunityCards';
 import { PlayerSeat } from '../../../components/PlayerSeat';
 import { PotDisplay, BettingInfo } from '../../../components/Chip';
@@ -264,15 +264,15 @@ type TableId = typeof TABLES[number]['id'];
 
 // ── テーブル状態フェッチ ──────────────────────────────
 
-async function fetchTableInfo(roomId: string): Promise<{ playerCount: number; phase: string }> {
+async function fetchTableInfo(roomId: string): Promise<{ playerCount: number; maxSeats: number; isFull: boolean; phase: string }> {
   try {
     const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST ?? 'localhost:1999';
     const proto = host.startsWith('localhost') ? 'http' : 'https';
     const res = await fetch(`${proto}://${host}/parties/main/${roomId}`, { signal: AbortSignal.timeout(4000) });
-    if (!res.ok) return { playerCount: 0, phase: 'lobby' };
+    if (!res.ok) return { playerCount: 0, maxSeats: 6, isFull: false, phase: 'lobby' };
     return await res.json();
   } catch {
-    return { playerCount: 0, phase: 'lobby' };
+    return { playerCount: 0, maxSeats: 6, isFull: false, phase: 'lobby' };
   }
 }
 
@@ -286,7 +286,7 @@ export default function OnlinePage() {
   const [myId, setMyId] = useState('');
   const [handle, setHandle] = useState('');
   const [selectedTable, setSelectedTable] = useState<TableId | null>(null);
-  const [tableCounts, setTableCounts] = useState<Record<string, { playerCount: number; phase: string }>>({});
+  const [tableCounts, setTableCounts] = useState<Record<string, { playerCount: number; maxSeats: number; isFull: boolean; phase: string }>>({});
   const [players, setPlayers] = useState<PlayerInfo[]>([]);
   const [game, setGame] = useState<PublicGame | null>(null);
   const [holeCards, setHoleCards] = useState<HoleCards | null>(null);
@@ -330,7 +330,7 @@ export default function OnlinePage() {
         TABLES.map(async t => ({ id: t.id, info: await fetchTableInfo(t.id) }))
       );
       if (!cancelled) {
-        const counts: Record<string, { playerCount: number; phase: string }> = {};
+        const counts: Record<string, { playerCount: number; maxSeats: number; isFull: boolean; phase: string }> = {};
         results.forEach(r => { counts[r.id] = r.info; });
         setTableCounts(counts);
       }
@@ -413,6 +413,15 @@ export default function OnlinePage() {
         }
         case 'error': {
           const e = msg as { type: 'error'; code: string; message?: string };
+          if (e.code === 'ROOM_FULL') {
+            // 満席 → テーブル選択に戻してエラー表示
+            socketRef.current?.close();
+            socketRef.current = null;
+            setPagePhase('table_select');
+            resetGameState();
+            setError(e.message ?? 'このテーブルは満席です');
+            return;
+          }
           const txt = `${e.code}${e.message ? ': ' + e.message : ''}`;
           setServerError(txt);
           setTimeout(() => setServerError(null), 4000);
@@ -477,8 +486,34 @@ export default function OnlinePage() {
     sendStart(socket);
   };
 
+  const doRebuy = () => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    sendRebuy(socket);
+  };
+
   // pagePhase を ref にも同期（close ハンドラから参照するため）
   useEffect(() => { pagePhaseRef.current = pagePhase; }, [pagePhase]);
+
+  // 自分のターンになったらタブタイトルを点滅
+  useEffect(() => {
+    const me = players.find(p => p.id === myId);
+    const isMyTurn = !!(game?.playerGames[myId]?.isTurn);
+    if (!isMyTurn) {
+      document.title = 'CIRCUIT 23';
+      return;
+    }
+    document.title = '🎰 Your turn! — CIRCUIT 23';
+    const flash = setInterval(() => {
+      document.title = document.title.startsWith('🎰')
+        ? 'CIRCUIT 23'
+        : '🎰 Your turn! — CIRCUIT 23';
+    }, 900);
+    return () => {
+      clearInterval(flash);
+      document.title = 'CIRCUIT 23';
+    };
+  }, [game, myId, players]);
 
   // チャット自動スクロール
   useEffect(() => {
@@ -546,18 +581,22 @@ export default function OnlinePage() {
             {TABLES.map(table => {
               const info = tableCounts[table.id];
               const count = info?.playerCount ?? 0;
+              const maxSeats = info?.maxSeats ?? 6;
+              const isFull = info?.isFull ?? false;
               const phase = info?.phase ?? 'lobby';
               const isSel = selectedTable === table.id;
               const inGame = phase === 'in_hand' || phase === 'between_hand';
               return (
                 <button
                   key={table.id}
-                  onClick={() => !isConnecting && setSelectedTable(table.id)}
-                  disabled={isConnecting}
+                  onClick={() => !isConnecting && !isFull && setSelectedTable(table.id)}
+                  disabled={isConnecting || isFull}
                   className={`w-full text-left rounded-sm border p-4 transition-all ${
-                    isSel
-                      ? 'border-neon-pink bg-neon-pink/10'
-                      : 'border-border-default bg-surface/40 hover:border-neon-blue/60 hover:bg-surface/60'
+                    isFull
+                      ? 'border-border-default bg-surface/20 opacity-50 cursor-not-allowed'
+                      : isSel
+                        ? 'border-neon-pink bg-neon-pink/10'
+                        : 'border-border-default bg-surface/40 hover:border-neon-blue/60 hover:bg-surface/60'
                   } disabled:cursor-not-allowed`}
                 >
                   <div className="flex items-start justify-between gap-4">
@@ -569,23 +608,28 @@ export default function OnlinePage() {
                         <span className="text-[9px] tracking-[0.25em] font-mono text-text-secondary border border-border-default px-1.5 py-0.5">
                           {table.label}
                         </span>
+                        {isFull && (
+                          <span className="text-[9px] tracking-[0.25em] font-mono text-crimson border border-crimson/50 px-1.5 py-0.5">
+                            FULL
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-text-secondary font-mono">{table.desc}</p>
                     </div>
                     <div className="text-right shrink-0 space-y-1">
                       <div className="text-xs font-mono text-cyber-gold">{table.blinds}</div>
                       <div className={`text-[10px] font-mono flex items-center gap-1 justify-end ${
-                        count > 0 ? 'text-acid-green' : 'text-text-secondary'
+                        isFull ? 'text-crimson' : count > 0 ? 'text-acid-green' : 'text-text-secondary'
                       }`}>
                         <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-                          inGame ? 'bg-neon-pink animate-pulse' : count > 0 ? 'bg-acid-green' : 'bg-border-default'
+                          isFull ? 'bg-crimson' : inGame ? 'bg-neon-pink animate-pulse' : count > 0 ? 'bg-acid-green' : 'bg-border-default'
                         }`} />
-                        {count} {count === 1 ? 'player' : 'players'}
-                        {inGame && <span className="text-neon-pink ml-1">IN GAME</span>}
+                        {count}/{maxSeats}
+                        {isFull ? <span className="ml-1">満席</span> : inGame ? <span className="text-neon-pink ml-1">IN GAME</span> : null}
                       </div>
                     </div>
                   </div>
-                  {isSel && (
+                  {isSel && !isFull && (
                     <div className="mt-3 pt-3 border-t border-neon-pink/30">
                       <button
                         onClick={e => { e.stopPropagation(); if (handle.trim()) connect(table.id); }}
@@ -656,17 +700,38 @@ export default function OnlinePage() {
             )}
           </ul>
 
+          {/* チップ 0 の自分にリバイボタン */}
+          {(() => {
+            const myPi = players.find(p => p.id === myId);
+            if (myPi && myPi.stack === 0) {
+              return (
+                <div className="rounded-sm border border-cyber-gold/40 bg-cyber-gold/5 p-3 space-y-2">
+                  <p className="text-xs font-mono text-cyber-gold text-center tracking-wider">チップが尽きました</p>
+                  <button
+                    onClick={doRebuy}
+                    className="w-full h-10 bg-cyber-gold text-background rounded-sm font-bold tracking-[0.2em] text-sm uppercase hover:opacity-90 transition-opacity"
+                  >
+                    REBUY ◉1000
+                  </button>
+                </div>
+              );
+            }
+            return null;
+          })()}
+
           {myId === hostId ? (
             <div className="space-y-2">
               <button
                 onClick={doSendStart}
-                disabled={players.length < 2}
+                disabled={players.filter(p => p.isConnected && p.stack > 0).length < 2}
                 className="w-full h-11 rounded-sm text-sm font-bold tracking-[0.2em] uppercase transition-colors bg-neon-pink text-background neon-glow-pink disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {players.length < 2 ? 'Waiting for players…' : '▶ START GAME'}
+                {players.filter(p => p.isConnected && p.stack > 0).length < 2 ? 'Waiting for players…' : '▶ START GAME'}
               </button>
-              {players.length < 2 && (
-                <p className="text-xs text-text-secondary font-mono text-center">あと{2 - players.length}人必要</p>
+              {players.filter(p => p.isConnected && p.stack > 0).length < 2 && (
+                <p className="text-xs text-text-secondary font-mono text-center">
+                  チップを持つプレイヤーが2人必要です
+                </p>
               )}
             </div>
           ) : (
