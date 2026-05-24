@@ -4,6 +4,7 @@
 // =====================================================
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import PartySocket from 'partysocket';
 import {
   joinCircuit23,
@@ -357,9 +358,30 @@ function OnlineActionBar({
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const TABLES = [
-  { id: 'sector-23',   name: 'SECTOR 23',   label: 'MAIN FLOOR',  blinds: '5 / 10', desc: 'Open entry · 6-max' },
-  { id: 'neon-lounge', name: 'NEON LOUNGE', label: 'LATE NIGHT',  blinds: '5 / 10', desc: 'After dark session' },
-  { id: 'cyber-den',   name: 'CYBER DEN',   label: 'UNDERGROUND', blinds: '5 / 10', desc: 'Deep circuit zone' },
+  {
+    id: 'sector-23',
+    name: 'SECTOR 23',
+    label: 'MAIN FLOOR',
+    blinds: '5 / 10',
+    desc: 'Open entry · 6-max',
+    image: '/table-sector-23.png',
+  },
+  {
+    id: 'neon-lounge',
+    name: 'NEON LOUNGE',
+    label: 'LATE NIGHT',
+    blinds: '5 / 10',
+    desc: 'After dark session',
+    image: '/table-neon-lounge.png',
+  },
+  {
+    id: 'cyber-den',
+    name: 'CYBER DEN',
+    label: 'UNDERGROUND',
+    blinds: '5 / 10',
+    desc: 'Deep circuit zone',
+    image: '/table-cyber-den.png',
+  },
 ] as const;
 type TableId = typeof TABLES[number]['id'];
 
@@ -748,46 +770,70 @@ export default function OnlinePage() {
                   key={table.id}
                   onClick={() => !isConnecting && setSelectedTable(table.id)}
                   disabled={isConnecting}
-                  className={`w-full text-left rounded-sm border p-4 transition-all ${
+                  className={`w-full text-left rounded-sm border overflow-hidden transition-all ${
                     isSel
-                      ? 'border-neon-pink bg-neon-pink/10'
-                      : 'border-border-default bg-surface/40 hover:border-neon-blue/60 hover:bg-surface/60'
+                      ? 'border-neon-pink shadow-[0_0_16px_rgba(255,46,151,0.3)]'
+                      : 'border-border-default hover:border-neon-blue/60'
                   } disabled:cursor-not-allowed`}
                 >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-0.5">
+                  {/* テーブル画像 */}
+                  <div className="relative h-32 sm:h-40 w-full overflow-hidden">
+                    <Image
+                      src={table.image}
+                      alt={table.name}
+                      fill
+                      className={`object-cover transition-transform duration-500 ${isSel ? 'scale-105' : 'scale-100 group-hover:scale-105'}`}
+                      unoptimized
+                    />
+                    {/* グラデーションオーバーレイ */}
+                    <div className={`absolute inset-0 transition-opacity ${
+                      isSel
+                        ? 'bg-gradient-to-t from-background/90 via-background/40 to-transparent'
+                        : 'bg-gradient-to-t from-background/80 via-background/30 to-transparent'
+                    }`} />
+                    {/* テーブル名（画像下部にオーバーレイ） */}
+                    <div className="absolute bottom-0 left-0 right-0 px-4 py-3 flex items-end justify-between">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-display font-bold tracking-wider text-sm text-foreground">
+                        <span className={`font-display font-bold tracking-wider text-base drop-shadow-lg ${isSel ? 'text-neon-pink' : 'text-foreground'}`}>
                           {table.name}
                         </span>
-                        <span className="text-[9px] tracking-[0.25em] font-mono text-text-secondary border border-border-default px-1.5 py-0.5">
+                        <span className="text-[9px] tracking-[0.25em] font-mono text-text-secondary border border-border-default/60 bg-background/60 px-1.5 py-0.5 backdrop-blur-sm">
                           {table.label}
                         </span>
                         {isFull && (
-                          <span className="text-[9px] tracking-[0.25em] font-mono text-cyber-gold border border-cyber-gold/50 px-1.5 py-0.5">
-                            FULL · 観戦可
+                          <span className="text-[9px] tracking-[0.25em] font-mono text-cyber-gold border border-cyber-gold/50 bg-background/60 px-1.5 py-0.5 backdrop-blur-sm">
+                            FULL
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-text-secondary font-mono">{table.desc}</p>
-                    </div>
-                    <div className="text-right shrink-0 space-y-1">
-                      <div className="text-xs font-mono text-cyber-gold">{table.blinds}</div>
-                      <div className={`text-[10px] font-mono flex items-center gap-1 justify-end ${
-                        count > 0 ? 'text-acid-green' : 'text-text-secondary'
+                      {/* プレイヤー数 */}
+                      <div className={`text-[10px] font-mono flex items-center gap-1 bg-background/70 px-2 py-0.5 rounded-sm backdrop-blur-sm ${
+                        isFull ? 'text-cyber-gold' : count > 0 ? 'text-acid-green' : 'text-text-secondary'
                       }`}>
                         <span className={`inline-block w-1.5 h-1.5 rounded-full ${
                           inGame ? 'bg-neon-pink animate-pulse' : count > 0 ? 'bg-acid-green' : 'bg-border-default'
                         }`} />
                         {count}/{maxSeats}
-                        {isFull ? <span className="text-cyber-gold ml-1">+{spectatorCount}👁</span>
-                          : inGame ? <span className="text-neon-pink ml-1">IN GAME</span>
-                          : null}
+                        {inGame && !isFull && <span className="text-neon-pink ml-1">IN GAME</span>}
+                        {isFull && spectatorCount > 0 && <span className="ml-1">+{spectatorCount}👁</span>}
                       </div>
                     </div>
                   </div>
+
+                  {/* 下部テキストエリア */}
+                  <div className={`px-4 py-3 flex items-center justify-between gap-4 ${
+                    isSel ? 'bg-neon-pink/5' : 'bg-surface/40'
+                  }`}>
+                    <p className="text-xs text-text-secondary font-mono">{table.desc}</p>
+                    <div className="shrink-0 text-right">
+                      <span className="text-[9px] text-text-secondary font-mono tracking-widest block">BLINDS</span>
+                      <span className="text-xs font-mono text-cyber-gold font-bold">{table.blinds}</span>
+                    </div>
+                  </div>
+
+                  {/* 選択時 JOIN ボタン */}
                   {isSel && (
-                    <div className="mt-3 pt-3 border-t border-neon-pink/30">
+                    <div className="px-4 pb-4">
                       <button
                         onClick={e => { e.stopPropagation(); if (handle.trim()) connect(table.id); }}
                         disabled={isConnecting || !handle.trim()}
