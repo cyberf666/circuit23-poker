@@ -856,29 +856,36 @@ export default function OnlinePage() {
                           </span>
                         )}
                       </div>
-                      {/* プレイヤー数 */}
-                      <div className={`text-[10px] font-mono flex items-center gap-1 bg-background/70 px-2 py-0.5 rounded-sm backdrop-blur-sm ${
-                        isFull ? 'text-cyber-gold' : count > 0 ? 'text-acid-green' : 'text-text-secondary'
-                      }`}>
-                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-                          inGame ? 'bg-neon-pink animate-pulse' : count > 0 ? 'bg-acid-green' : 'bg-border-default'
-                        }`} />
-                        {count}/{maxSeats}
-                        {inGame && !isFull && <span className="text-neon-pink ml-1">IN GAME</span>}
-                        {isFull && spectatorCount > 0 && <span className="ml-1">+{spectatorCount}👁</span>}
-                      </div>
+                      {/* ステータスドット (画像内は最小限) */}
+                      <span className={`inline-block w-2 h-2 rounded-full ${
+                        inGame ? 'bg-neon-pink animate-pulse shadow-[0_0_6px_rgba(255,46,151,0.8)]'
+                          : count > 0 ? 'bg-acid-green shadow-[0_0_6px_rgba(0,255,135,0.6)]'
+                          : 'bg-border-default'
+                      }`} />
                     </div>
                   </div>
 
                   {/* 下部テキストエリア */}
-                  <div className={`px-4 py-3 flex items-center justify-between gap-4 ${
+                  <div className={`px-4 py-2.5 flex items-center justify-between gap-3 ${
                     isSel ? 'bg-neon-pink/5' : 'bg-surface/40'
                   }`}>
-                    <p className="text-xs text-text-secondary font-mono">{table.desc}</p>
-                    <div className="shrink-0 text-right">
-                      <span className="text-[9px] text-text-secondary font-mono tracking-widest block">BLINDS</span>
-                      <span className="text-xs font-mono text-cyber-gold font-bold">{table.blinds}</span>
+                    {/* 参加人数 — 目立たせる */}
+                    <div className="flex items-center gap-2">
+                      <span className={`font-mono font-bold text-2xl tabular-nums leading-none ${
+                        isFull ? 'text-cyber-gold' : count > 0 ? 'text-acid-green' : 'text-text-secondary/50'
+                      }`}>{count}</span>
+                      <span className="text-sm text-text-secondary/60 font-mono leading-none">/ {maxSeats}</span>
+                      {inGame && !isFull && (
+                        <span className="text-[8px] text-neon-pink font-mono tracking-widest border border-neon-pink/40 px-1.5 py-0.5 rounded-sm">
+                          IN GAME
+                        </span>
+                      )}
+                      {isFull && spectatorCount > 0 && (
+                        <span className="text-[9px] text-text-secondary font-mono">+{spectatorCount}👁</span>
+                      )}
                     </div>
+                    {/* ブラインドは小さくサブ情報 */}
+                    <span className="text-[8px] text-text-secondary/35 font-mono shrink-0">BL {table.blinds}</span>
                   </div>
 
                   {/* 選択時 JOIN ボタン */}
