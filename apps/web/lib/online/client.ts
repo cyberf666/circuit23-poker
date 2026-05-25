@@ -79,3 +79,7 @@ export function sendChat(socket: PartySocket, text: string): void {
 export function sendSitOut(socket: PartySocket, sitOut: boolean): void {
   socket.send(JSON.stringify({ type: 'sit_out', sitOut }));
 }
+
+export function sendExchange(socket: PartySocket, cardIndices: number[]): void {
+  socket.send(JSON.stringify({ type: 'exchange', cardIndices }));
+}

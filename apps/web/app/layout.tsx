@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Orbitron, Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { Web3Provider } from '../components/providers/Web3Provider';
@@ -20,6 +20,13 @@ const jetbrainsMono = JetBrains_Mono({
   subsets: ['latin'],
   display: 'swap',
 });
+
+// iOS Safari の safe-area-inset (ノッチ/ホームバー) 対応
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+};
 
 export const metadata: Metadata = {
   title: "CIRCUIT 23 — Brainverse Underground Hold'em",

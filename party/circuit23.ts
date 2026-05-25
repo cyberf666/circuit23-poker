@@ -52,6 +52,7 @@ interface PlayerInfo {
   labels: string[];
   isConnected: boolean;
   isSittingOut: boolean;
+  hasExchanged: boolean;
 }
 
 type RoomPhase = 'lobby' | 'in_hand' | 'between_hand';
@@ -217,6 +218,7 @@ export default class Circuit23Server implements Party.Server {
       labels,
       isConnected: true,
       isSittingOut: false,
+      hasExchanged: false,
     });
 
     // 最初の参加者がホスト
@@ -335,6 +337,9 @@ export default class Circuit23Server implements Party.Server {
       case 'sit_out':
         this.handleSitOut(sender, !!msg.sitOut);
         break;
+      case 'exchange':
+        this.handleExchange(sender, (msg.cardIndices as number[] | undefined) ?? [0, 1]);
+        break;
       case 'action':
         this.handleAction(sender, msg.action as ActionType, msg.amount as number | undefined);
         break;
@@ -388,6 +393,69 @@ export default class Circuit23Server implements Party.Server {
     this.broadcastState();
   }
 
+  // ── カード交換（プリフロップ限定、1ハンド1回） ──────────
+  private handleExchange(conn: Party.Connection, cardIndices: number[]) {
+    if (!this.tableState || this.phase !== 'in_hand') {
+      conn.send(JSON.stringify({ type: 'error', code: 'NOT_IN_HAND' }));
+      return;
+    }
+    const gp = this.tableState.players[conn.id];
+    const pi = this.playerInfo.get(conn.id);
+    if (!gp || !pi) {
+      conn.send(JSON.stringify({ type: 'error', code: 'NOT_IN_GAME' }));
+      return;
+    }
+    if (this.tableState.street !== 'preflop') {
+      conn.send(JSON.stringify({ type: 'error', code: 'EXCHANGE_PREFLOP_ONLY', message: 'カード交換はプリフロップのみ可能です' }));
+      return;
+    }
+    if (pi.hasExchanged) {
+      conn.send(JSON.stringify({ type: 'error', code: 'ALREADY_EXCHANGED', message: '今のハンドでは既に交換済みです' }));
+      return;
+    }
+    if (gp.status === 'folded') {
+      conn.send(JSON.stringify({ type: 'error', code: 'ALREADY_FOLDED' }));
+      return;
+    }
+
+    // 有効なインデックス (0 or 1) のみ使用
+    const validIdx = [...new Set(cardIndices.filter((i): i is 0 | 1 => i === 0 || i === 1))];
+    if (validIdx.length === 0) {
+      conn.send(JSON.stringify({ type: 'error', code: 'NO_CARDS_SELECTED' }));
+      return;
+    }
+
+    // デッキから指定枚数引く
+    const [drawn, newDeck] = drawCards(this.deck, validIdx.length);
+    this.deck = newDeck;
+
+    // ホールカードを部分置換
+    const updated = [...gp.holeCards];
+    validIdx.forEach((idx, i) => { if (drawn[i]) updated[idx] = drawn[i]!; });
+
+    const newPlayers = { ...this.tableState.players };
+    newPlayers[conn.id] = { ...gp, holeCards: updated };
+    this.tableState = { ...this.tableState, players: newPlayers };
+    pi.hasExchanged = true;
+
+    // 本人に新しいホールカードを送信
+    conn.send(JSON.stringify({
+      type: 'hole_cards',
+      cards: updated,
+      handNumber: this.tableState.handNumber,
+    }));
+
+    // 全員に交換通知
+    this.room.broadcast(JSON.stringify({
+      type: 'chat',
+      from: 'CIRCUIT-23',
+      text: `${pi.handle} exchanged ${validIdx.length} card${validIdx.length > 1 ? 's' : ''}`,
+      at: Date.now(),
+    }));
+
+    this.broadcastState();
+  }
+
   private handleStart(conn: Party.Connection) {
     if (conn.id !== this.hostId) {
       conn.send(JSON.stringify({ type: 'error', code: 'NOT_HOST' }));
@@ -404,6 +472,9 @@ export default class Circuit23Server implements Party.Server {
   }
 
   private startHand() {
+    // ハンドごとに交換フラグをリセット
+    Array.from(this.playerInfo.values()).forEach(p => { p.hasExchanged = false; });
+
     const readyPlayers = Array.from(this.playerInfo.values()).filter(p => p.isReady && p.stack > 0 && !p.isSittingOut);
     if (readyPlayers.length < 2) {
       this.message = 'Need at least 2 ready players with chips';

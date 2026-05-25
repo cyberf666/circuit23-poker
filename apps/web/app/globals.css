@@ -419,6 +419,11 @@ body {
   user-select: none;
 }
 
+/* ── iOS safe-area ホームバー対応 ── */
+.pb-safe {
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+}
+
 /* ── Mobile: poker-table-felt サイズ調整 ── */
 @media (max-width: 639px) {
   .poker-table-felt {

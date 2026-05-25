@@ -2,7 +2,7 @@
 // =====================================================
 // /play/online — PartyKit 版オンライン対戦テーブル
 // =====================================================
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import PartySocket from 'partysocket';
@@ -13,12 +13,13 @@ import {
   sendRebuy,
   sendChat as sendChatMsg,
   sendSitOut,
+  sendExchange,
 } from '../../../lib/online/client';
 import { playSound } from '../../../lib/sounds';
 import { CommunityCards } from '../../../components/CommunityCards';
 import { PlayerSeat } from '../../../components/PlayerSeat';
 import { PotDisplay, BettingInfo } from '../../../components/Chip';
-import { GAME_CONFIG } from '@ntp-poker/game-core';
+import { GAME_CONFIG, evaluateHand } from '@ntp-poker/game-core';
 import type { ActionType } from '../../../lib/online/client';
 import type { Player, Card, PlayerLabel, Seat } from '@ntp-poker/types';
 
@@ -446,6 +447,9 @@ export default function OnlinePage() {
   const [showHandLog, setShowHandLog] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  // カード交換
+  const [exchangeCardSet, setExchangeCardSet] = useState<Set<number>>(new Set());
+  const [hasExchangedHand, setHasExchangedHand] = useState(false);
 
   const chatBubbleTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -476,6 +480,8 @@ export default function OnlinePage() {
     setChat([]);
     setIsSpectator(false);
     setHandLog([]);
+    setExchangeCardSet(new Set());
+    setHasExchangedHand(false);
   }, []);
 
   // ── テーブル情報ポーリング ─────────────────────────
@@ -658,6 +664,14 @@ export default function OnlinePage() {
     sendRebuy(socket);
   };
 
+  const doExchange = () => {
+    const socket = socketRef.current;
+    if (!socket || exchangeCardSet.size === 0) return;
+    sendExchange(socket, Array.from(exchangeCardSet));
+    setHasExchangedHand(true);
+    setExchangeCardSet(new Set());
+  };
+
   const doToggleSitOut = () => {
     const socket = socketRef.current;
     const myPi = players.find(p => p.id === myId);
@@ -692,11 +706,13 @@ export default function OnlinePage() {
     return () => { clearInterval(flash); document.title = 'CIRCUIT 23'; };
   }, [game, myId]);
 
-  // カード配布サウンド
+  // カード配布サウンド + 交換フラグリセット
   useEffect(() => {
     if (holeCards && holeCards.handNumber !== prevHoleCardsHandRef.current) {
       playSound('deal');
       prevHoleCardsHandRef.current = holeCards.handNumber;
+      setHasExchangedHand(false);
+      setExchangeCardSet(new Set());
     }
   }, [holeCards]);
 
@@ -726,6 +742,17 @@ export default function OnlinePage() {
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
+
+  // ── リアルタイム役判定（フロップ以降） ────────────────
+  const myHandEval = useMemo(() => {
+    if (!holeCards?.cards || holeCards.cards.length < 2) return undefined;
+    if (!game || game.communityCards.length < 3) return undefined;
+    try {
+      return evaluateHand(myId, holeCards.cards, game.communityCards);
+    } catch {
+      return undefined;
+    }
+  }, [holeCards, game, myId]);
 
   // ── 自分の状態 ────────────────────────────────────
 
@@ -1225,12 +1252,53 @@ export default function OnlinePage() {
                 size={isMobile ? 'md' : 'lg'}
                 isDealer={mePlayer.seat === (game?.dealerSeat ?? -1)}
                 revealCards={isHandEnd}
-                bestHandName={isHandEnd ? showdownBestHand.get(myId) : undefined}
+                bestHandName={isHandEnd ? showdownBestHand.get(myId) : myHandEval?.name}
                 isWinner={isHandEnd && winnerSet.has(myId)}
                 isLoser={isHandEnd && showdownBestHand.has(myId) && !winnerSet.has(myId)}
                 chatBubble={me ? chatBubbles[me.handle] : undefined}
               />
               <TurnTimerBar timer={turnTimer} playerId={myId} />
+
+              {/* カード交換ボタン — プリフロップ限定 */}
+              {!isHandEnd && game?.street === 'preflop' && holeCards && !isSpectator && (
+                <div className="flex flex-col items-center gap-1 mt-1">
+                  {!hasExchangedHand ? (
+                    <>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[8px] font-mono text-text-secondary/60 tracking-widest">SWAP</span>
+                        {[0, 1].map(idx => (
+                          <button
+                            key={idx}
+                            onClick={() => setExchangeCardSet(prev => {
+                              const next = new Set(prev);
+                              if (next.has(idx)) next.delete(idx);
+                              else next.add(idx);
+                              return next;
+                            })}
+                            className={`text-[9px] font-mono px-2 py-0.5 border rounded-sm transition-colors ${
+                              exchangeCardSet.has(idx)
+                                ? 'border-cyber-gold bg-cyber-gold/20 text-cyber-gold'
+                                : 'border-border-default text-text-secondary hover:border-neon-blue hover:text-neon-blue'
+                            }`}
+                          >
+                            {idx + 1}枚目
+                          </button>
+                        ))}
+                      </div>
+                      {exchangeCardSet.size > 0 && (
+                        <button
+                          onClick={doExchange}
+                          className="text-[9px] font-mono px-3 py-1 border border-neon-pink/60 text-neon-pink bg-neon-pink/10 rounded-sm hover:bg-neon-pink/20 transition-colors"
+                        >
+                          ↔ EXCHANGE {exchangeCardSet.size}枚
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-[8px] font-mono text-text-secondary/40 tracking-widest">↔ EXCHANGED</span>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-xs text-text-secondary font-mono py-2">
@@ -1262,11 +1330,11 @@ export default function OnlinePage() {
       </footer>
 
       {/* チャット + ハンドログ */}
-      <div className="border-t border-border-default bg-surface/30">
+      <div className="border-t border-border-default bg-surface/30 pb-safe">
         {/* チャット履歴 */}
         <div className="px-4 pt-2 pb-2">
           <div className="max-w-2xl mx-auto space-y-2">
-            <div className="hidden sm:block h-20 overflow-y-auto space-y-0.5 scrollbar-thin pr-1">
+            <div className="h-12 sm:h-20 overflow-y-auto space-y-0.5 scrollbar-thin pr-1">
               {chat.length === 0
                 ? <p className="text-[10px] text-text-secondary font-mono italic">No messages yet…</p>
                 : chat.map((c, i) => (
