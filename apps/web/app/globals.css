@@ -419,6 +419,18 @@ body {
   user-select: none;
 }
 
+/* ── Mobile: poker-table-felt サイズ調整 ── */
+@media (max-width: 639px) {
+  .poker-table-felt {
+    width: clamp(280px, 92%, 480px);
+    height: clamp(180px, 55vw, 320px);
+    transform: translate(-50%, -50%) perspective(900px) rotateX(40deg);
+  }
+  .poker-table-felt::after {
+    font-size: clamp(50px, 14vw, 100px);
+  }
+}
+
 /* Pot flash — 中央ポットが増えたとき pulse */
 @keyframes pot-flash {
   0% {

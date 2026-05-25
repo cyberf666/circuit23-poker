@@ -283,8 +283,8 @@ function OnlineActionBar({
             >ALL-IN</button>
           </div>
 
-          {/* ±微調整 */}
-          <div className="flex gap-1.5 items-center justify-center text-xs flex-wrap">
+          {/* ±微調整 — デスクトップのみ */}
+          <div className="hidden sm:flex gap-1.5 items-center justify-center text-xs flex-wrap">
             <span className="text-text-secondary font-mono tracking-wider">±</span>
             {GAME_CONFIG.QUICK_BET_INCREMENTS.map((delta: number) => (
               <button
@@ -348,7 +348,7 @@ function OnlineActionBar({
         )}
       </div>
 
-      <p className="text-center text-[9px] text-text-secondary/40 font-mono tracking-widest">
+      <p className="hidden sm:block text-center text-[9px] text-text-secondary/40 font-mono tracking-widest">
         F : FOLD  ·  C : CALL / CHECK  ·  SPACE : BET / RAISE
       </p>
     </div>
@@ -445,6 +445,7 @@ export default function OnlinePage() {
   const [handLog, setHandLog] = useState<string[]>([]);
   const [showHandLog, setShowHandLog] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
 
   const chatBubbleTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -716,6 +717,14 @@ export default function OnlinePage() {
   useEffect(() => () => {
     if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
     socketRef.current?.close();
+  }, []);
+
+  // モバイル検出 (< 640px = Tailwind sm breakpoint)
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 640);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
   }, []);
 
   // ── 自分の状態 ────────────────────────────────────
@@ -1144,14 +1153,15 @@ export default function OnlinePage() {
           </div>
         )}
 
-        {/* 相手席 — モバイルでは横スクロール */}
-        <div className="relative z-10 w-full overflow-x-auto pb-2">
-          <div className="flex justify-around items-start gap-3 sm:gap-6 lg:gap-12 min-w-max mx-auto px-2">
+        {/* 相手席 — モバイルでは折り返し */}
+        <div className="relative z-10 w-full pb-2">
+          <div className="flex flex-wrap justify-center items-start gap-2 sm:gap-6 lg:gap-12 mx-auto px-2">
             {othersPlayers.map(p => (
               <div key={p.id} className="flex flex-col items-center shrink-0">
                 <PlayerSeat
                   player={p}
                   isMe={false}
+                  size={isMobile ? 'sm' : 'md'}
                   isDealer={p.seat === (game?.dealerSeat ?? -1)}
                   revealCards={isHandEnd}
                   bestHandName={isHandEnd ? showdownBestHand.get(p.id) : undefined}
@@ -1185,7 +1195,7 @@ export default function OnlinePage() {
                   />
                 )}
               </div>
-              <CommunityCards cards={game.communityCards} />
+              <CommunityCards cards={game.communityCards} cardSize={isMobile ? 'sm' : 'lg'} />
             </>
           )}
 
@@ -1212,7 +1222,7 @@ export default function OnlinePage() {
               <PlayerSeat
                 player={mePlayer}
                 isMe={true}
-                size="lg"
+                size={isMobile ? 'md' : 'lg'}
                 isDealer={mePlayer.seat === (game?.dealerSeat ?? -1)}
                 revealCards={isHandEnd}
                 bestHandName={isHandEnd ? showdownBestHand.get(myId) : undefined}
@@ -1256,7 +1266,7 @@ export default function OnlinePage() {
         {/* チャット履歴 */}
         <div className="px-4 pt-2 pb-2">
           <div className="max-w-2xl mx-auto space-y-2">
-            <div className="h-20 overflow-y-auto space-y-0.5 scrollbar-thin pr-1">
+            <div className="hidden sm:block h-20 overflow-y-auto space-y-0.5 scrollbar-thin pr-1">
               {chat.length === 0
                 ? <p className="text-[10px] text-text-secondary font-mono italic">No messages yet…</p>
                 : chat.map((c, i) => (

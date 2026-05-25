@@ -4,7 +4,7 @@ import { Card } from '@ntp-poker/types';
 interface Props {
   card?: Card;
   faceDown?: boolean;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
 }
 
 const SUIT_SYMBOLS: Record<string, string> = {
@@ -15,6 +15,7 @@ const SUIT_SYMBOLS: Record<string, string> = {
 };
 
 const SIZE_CLASSES = {
+  xs: 'w-9 h-[52px] text-[10px]',
   sm: 'w-14 h-20 text-base',
   md: 'w-20 h-28 text-xl',
   lg: 'w-28 h-40 text-3xl',
@@ -42,7 +43,7 @@ export function PlayingCard({ card, faceDown = false, size = 'md' }: Props) {
   const displayRank = card.rank === 'T' ? '10' : card.rank;
 
   const symbolSize =
-    size === 'lg' ? 'text-5xl' : size === 'md' ? 'text-3xl' : 'text-xl';
+    size === 'lg' ? 'text-5xl' : size === 'md' ? 'text-3xl' : size === 'sm' ? 'text-xl' : 'text-base';
   return (
     <div
       className={`${sizeClass} rounded card-shadow bg-white flex flex-col items-center justify-between p-1.5 select-none relative`}
