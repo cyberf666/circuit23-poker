@@ -424,7 +424,9 @@ export default function OnlinePage() {
   const [pagePhase, setPagePhase] = useState<PagePhase>('table_select');
   const [error, setError] = useState<string | null>(null);
   const [myId, setMyId] = useState('');
-  const [handle, setHandle] = useState('');
+  const [handle, setHandle] = useState(() =>
+    typeof window !== 'undefined' ? (localStorage.getItem('ntp-poker-handle') ?? '') : ''
+  );
   const [selectedTable, setSelectedTable] = useState<TableId | null>(null);
   const [tableCounts, setTableCounts] = useState<
     Record<string, { playerCount: number; maxSeats: number; isFull: boolean; phase: string; spectatorCount?: number }>
@@ -458,6 +460,11 @@ export default function OnlinePage() {
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const prevIsMyTurnRef = useRef(false);
   const prevHoleCardsHandRef = useRef(0);
+
+  // ハンドルを localStorage に保存（端末ごとに記憶）
+  useEffect(() => {
+    if (handle.trim()) localStorage.setItem('ntp-poker-handle', handle.trim());
+  }, [handle]);
 
   // URL パラメータからテーブル自動選択
   useEffect(() => {
