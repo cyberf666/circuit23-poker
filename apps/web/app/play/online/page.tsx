@@ -761,6 +761,18 @@ export default function OnlinePage() {
     }
   }, [holeCards, game, myId]);
 
+  // ── プリフロップ手札ラベル（T7o / AKs / JJ） ─────────
+  const preflopLabel = useMemo(() => {
+    if (!holeCards?.cards || holeCards.cards.length < 2) return undefined;
+    const [a, b] = holeCards.cards as [Card, Card];
+    const rankOrder = 'AKQJT98765432';
+    const ai = rankOrder.indexOf(a.rank);
+    const bi = rankOrder.indexOf(b.rank);
+    const [high, low] = ai <= bi ? [a, b] : [b, a];
+    if (high.rank === low.rank) return `${high.rank}${low.rank}`;
+    return `${high.rank}${low.rank}${high.suit === low.suit ? 's' : 'o'}`;
+  }, [holeCards]);
+
   // ── 自分の状態 ────────────────────────────────────
 
   const me = players.find(p => p.id === myId);
@@ -1100,7 +1112,7 @@ export default function OnlinePage() {
   const tableAmbient = selectedTable ? TABLE_AMBIENT[selectedTable] : TABLE_AMBIENT['sector-23'];
 
   return (
-    <div className="flex flex-col flex-1 min-h-screen relative overflow-hidden">
+    <div className="flex flex-col h-screen relative overflow-hidden">
       {/* テーブル背景画像（各テーブルで異なる） */}
       {tableBg && (
         <>
@@ -1266,7 +1278,7 @@ export default function OnlinePage() {
                 size={isMobile ? 'md' : 'lg'}
                 isDealer={mePlayer.seat === (game?.dealerSeat ?? -1)}
                 revealCards={isHandEnd}
-                bestHandName={isHandEnd ? showdownBestHand.get(myId) : myHandEval?.name}
+                bestHandName={isHandEnd ? showdownBestHand.get(myId) : (myHandEval?.name ?? preflopLabel)}
                 isWinner={isHandEnd && winnerSet.has(myId)}
                 isLoser={isHandEnd && showdownBestHand.has(myId) && !winnerSet.has(myId)}
                 chatBubble={me ? chatBubbles[me.handle] : undefined}
