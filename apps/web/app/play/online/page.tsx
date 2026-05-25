@@ -357,6 +357,20 @@ function OnlineActionBar({
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+// テーブルごとの全画面背景画像
+const TABLE_BG: Record<string, string> = {
+  'sector-23':   '/bg-sector-23.jpg',
+  'neon-lounge': '/bg-neon-lounge.jpg',
+  'cyber-den':   '/bg-cyber-den.jpg',
+};
+
+// テーブルごとの環境光カラー（radialグラデーション用）
+const TABLE_AMBIENT: Record<string, string> = {
+  'sector-23':   'rgba(255,46,151,0.08)',
+  'neon-lounge': 'rgba(60,0,180,0.10)',
+  'cyber-den':   'rgba(0,200,100,0.08)',
+};
+
 const TABLES = [
   {
     id: 'sector-23',
@@ -1032,8 +1046,28 @@ export default function OnlinePage() {
   const othersPlayers = others.map(buildP);
   const mePlayer = me ? buildP(me) : null;
 
+  const tableBg = selectedTable ? TABLE_BG[selectedTable] : undefined;
+  const tableAmbient = selectedTable ? TABLE_AMBIENT[selectedTable] : TABLE_AMBIENT['sector-23'];
+
   return (
     <div className="flex flex-col flex-1 min-h-screen relative overflow-hidden">
+      {/* テーブル背景画像（各テーブルで異なる） */}
+      {tableBg && (
+        <>
+          <Image
+            src={tableBg}
+            alt=""
+            fill
+            className="object-cover"
+            style={{ opacity: 0.28 }}
+            priority
+            unoptimized
+          />
+          {/* 読みやすさのためのダークオーバーレイ */}
+          <div className="absolute inset-0 bg-background/55" />
+        </>
+      )}
+
       {/* ヘッダー */}
       <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-border-default bg-surface-elevated/60 backdrop-blur-sm relative z-10">
         <div className="flex items-center gap-3">
@@ -1076,8 +1110,11 @@ export default function OnlinePage() {
       </header>
 
       <main className="flex-1 flex flex-col items-stretch justify-between px-4 sm:px-6 lg:px-12 py-4 relative min-h-0">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(255,46,151,0.06),transparent_65%)]" />
-        <div className="poker-table-felt" aria-hidden />
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{ background: `radial-gradient(ellipse at center, ${tableAmbient}, transparent 65%)` }}
+        />
+        <div className={`poker-table-felt${selectedTable ? ` table-${selectedTable}` : ''}`} aria-hidden />
 
         {serverError && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-crimson/20 border border-crimson text-crimson text-xs font-mono rounded-sm">

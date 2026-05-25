@@ -188,6 +188,54 @@ body {
   text-shadow: 0 0 40px rgba(255, 214, 0, 0.15);
 }
 
+/* ── Neon Lounge テーブルフェルト (深青紫) ── */
+.table-neon-lounge.poker-table-felt {
+  background:
+    radial-gradient(
+      ellipse at center,
+      rgba(50, 30, 130, 0.55) 0%,
+      rgba(25, 15, 90, 0.55) 45%,
+      rgba(12, 8, 55, 0.70) 80%,
+      rgba(6,  4, 28, 0.85) 100%
+    );
+  border-color: rgba(100, 40, 255, 0.45);
+  box-shadow:
+    0 60px 100px rgba(0, 0, 0, 0.65),
+    inset 0 0 140px rgba(0, 0, 0, 0.55),
+    inset 0 0 220px rgba(80, 0, 220, 0.10),
+    0 0 120px rgba(80, 0, 200, 0.22);
+}
+.table-neon-lounge.poker-table-felt::before {
+  border-color: rgba(100, 40, 255, 0.25);
+  box-shadow:
+    inset 0 0 30px rgba(100, 40, 255, 0.10),
+    0 0 40px rgba(80, 0, 200, 0.12);
+}
+
+/* ── Cyber Den テーブルフェルト (ダークグリーン) ── */
+.table-cyber-den.poker-table-felt {
+  background:
+    radial-gradient(
+      ellipse at center,
+      rgba(0, 55, 35, 0.55) 0%,
+      rgba(0, 30, 18, 0.55) 45%,
+      rgba(0, 16, 10, 0.70) 80%,
+      rgba(0,  6,  4, 0.85) 100%
+    );
+  border-color: rgba(0, 210, 110, 0.40);
+  box-shadow:
+    0 60px 100px rgba(0, 0, 0, 0.65),
+    inset 0 0 140px rgba(0, 0, 0, 0.55),
+    inset 0 0 220px rgba(0, 200, 100, 0.07),
+    0 0 120px rgba(0, 180, 80, 0.18);
+}
+.table-cyber-den.poker-table-felt::before {
+  border-color: rgba(0, 210, 110, 0.22);
+  box-shadow:
+    inset 0 0 30px rgba(0, 200, 100, 0.10),
+    0 0 40px rgba(0, 180, 80, 0.12);
+}
+
 /* ── Lose state (showdown loser) ── */
 .lose-fade {
   filter: grayscale(0.6) brightness(0.6);
