@@ -38,3 +38,6 @@ coverage/
 .eslintcache
 
 .vercel
+
+# 個人情報を含む平文（暗号化版 .gpg のみコミット）
+出産育児TODOリスト.md
