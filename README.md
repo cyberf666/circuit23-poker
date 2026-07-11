@@ -35,6 +35,7 @@ NEOTOKYOPUNKS(NTP) 世界観の中に実在する「ポーカーハウス」と�
 | 09 | [design_guidelines](docs/09_design_guidelines.md) | トンマナ・カラー・タイポ |
 | 10 | [roadmap](docs/10_roadmap.md) | フェーズ別計画・マイルストーン |
 | 11 | [legal_risks](docs/11_legal_risks.md) | 賭博罪リスク・IP利用・対策 |
+| 12 | [org_structure](docs/12_org_structure.md) | 事業化した場合の部署構造・AI化/自動化マップ |
 
 ## クイックスタート（実装着手時）
 
