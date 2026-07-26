@@ -191,6 +191,37 @@ client.login(TOKEN);
 - [ ] 接続してセッション開始（初回に Claude Code が母艦へ自動インストールされる）
 - [ ] 母艦のプロジェクトディレクトリを開いて動作確認（`ls` やファイル編集を指示してみる）
 
+### Windows 母艦の詳細手順（WSL 経由）
+
+デスクトップアプリの SSH 接続先は Linux/macOS のみのため、Windows 母艦では **WSL（Ubuntu）を接続先にする**。ファイルの置き場所も WSL 内に統一し、母艦では「WSL 環境セッション」、別PCからは「SSH 環境セッション」で**同じ WSL 内のファイル**を触る構成にする。
+
+1. **WSL を入れる**（PowerShell を管理者で開いて）
+   ```powershell
+   wsl --install
+   ```
+   再起動後、Ubuntu が起動したらユーザー名・パスワードを設定。
+2. **Ubuntu 内に Tailscale を入れて SSH を有効化**（Ubuntu のターミナルで）
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up --ssh
+   ```
+   表示される URL をブラウザで開いてログイン。`--ssh` を付けると **openssh-server や鍵の設定が一切不要**（Tailscale が SSH サーバを兼ねる）。
+   `tailscale status` で WSL のマシン名（例: `desktop-abc`）を控える。
+3. **リポジトリを WSL 内に置く**（パフォーマンスと安定性のため。`/mnt/c` 直参照は遅い）
+   ```bash
+   mkdir -p ~/projects && cd ~/projects
+   git clone https://github.com/cyberf666/circuit23-poker.git
+   ```
+   ※ Windows 側に未コミットの変更がある場合は、先に Windows 側で commit & push → WSL で clone/pull。
+4. **WSL を自動起動させておく**（PC 再起動後に WSL が止まっていると接続できないため）
+   - タスクスケジューラ → 基本タスクの作成 → トリガー「ログオン時」→ 操作「プログラムの開始」
+   - プログラム: `wsl.exe` / 引数: `-d Ubuntu -e sh -c "while true; do sleep 3600; done"`
+   - 「表示しない」で登録（WSL を常駐させるだけの空ループ）
+5. **母艦での作業**: デスクトップアプリで「**WSL**」環境を選び、`~/projects/circuit23-poker` を開く。
+6. **別PCからの作業**: デスクトップアプリで「+ Add SSH connection」→ SSH Host に `Ubuntuのユーザー名@WSLのTailscale名`（例: `taro@desktop-abc`）。Identity File は空欄で OK（Tailscale SSH が認証を代行）。
+
+トラブル時の代替: Tailscale SSH がうまくいかない場合は WSL に `sudo apt install openssh-server` で通常の SSH サーバを立てる方法もある（その場合は鍵かパスワードの設定が必要）。
+
 ### 運用ルール（両方のPCで共通）
 
 - [ ] 作業の区切りで `CLAUDE.md` の「現在の状況」を更新してコミット（Claude に「CLAUDE.mdの現在の状況を更新してコミットして」と言えばよい）
